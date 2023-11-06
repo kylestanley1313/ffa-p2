@@ -1,6 +1,4 @@
 import inspect
-import time
-from typing import Any
 import torch
 from torch import Generator, nn, Tensor
 
@@ -158,7 +156,7 @@ class FeatureCovarianceDataScratch(FeatureCovarianceDataBase):
         """Yields data (either training or validation) in batches."""
         cov = self.cov_train if train else self.cov_val
         cov_idx = (self.cov_mask == 0).nonzero()
-        idx = torch.randperm(cov_idx.shape[0], generator=gen)
+        idx = torch.randperm(cov_idx.shape[0], generator=self.gen)
         for i in range(0, cov_idx.shape[0], self.batch_size):
             batch_cov_idx = cov_idx[idx[i:i+self.batch_size]]
             batch_cov = cov[batch_cov_idx[:,0], batch_cov_idx[:,1]]
@@ -202,7 +200,7 @@ class SGD(HyperParameters):
 class LowRankCovarianceModelScratch(HyperParameters):
     """The low rank covariance model."""
 
-    def __init__(self, num_vars, num_comps, lr, sigma=0.01):
+    def __init__(self, num_vars, num_comps, lr, sigma=0.01, gen=Generator()):
         self.save_hyperparameters()
         self.l = torch.normal(
             0, sigma, (num_vars, num_comps), 
@@ -235,10 +233,12 @@ class LowRankCovarianceModelScratch(HyperParameters):
 class LowRankCovarianceModelConcise(nn_Module, HyperParameters):
     """The low rank covariance model."""
 
-    def __init__(self, num_vars, num_comps, lr):
+    def __init__(self, num_vars, num_comps, lr, gen=Generator()):
         super().__init__()
         self.save_hyperparameters()
-        self.l = nn.Embedding(num_vars, num_comps)  # TODO: sparse=True?
+        # NOTE: By default, nn.Embedding does not seed random initialization
+        self.l = nn.Embedding(num_vars, num_comps)  # TODO: sparse=True
+
 
     def forward(self, vars=None):
         vars = torch.arange(self.num_vars) if vars is None else vars
@@ -308,64 +308,3 @@ class Trainer(HyperParameters):
                 self.optim.step()
 
 
-
-# -------------------- EXECUTION -------------------- #
-
-# Globals
-seed = 12345
-gen = Generator().manual_seed(seed)
-
-# Generate factor model data
-loadings = torch.tensor([
-    [3, 0.1],
-    [-2, 0.3],
-    [0.1, 2.5], 
-    [-0.2, 4],
-    [-0.3, -3]
-])
-
-err_sds = torch.tensor([0.1, 0.1, 0.2, 0.2, 0.3])
-
-print("----- Testing FactorModelDataScratch -----")
-data = FactorModelDataScratch(loadings.T, err_sds, gen=gen, num_train=200, num_val=100)
-batch = next(iter(data.train_dataloader()))
-print(batch)
-print("----- Testing FactorModelDataConcise -----")
-data = FactorModelDataConcise(loadings.T, err_sds, gen=gen, num_train=200, num_val=100)
-batch = next(iter(data.train_dataloader()))
-print(batch)
-
-# Generate covariance data
-cov_mask = torch.zeros(data.num_vars, data.num_vars)
-for i in range(data.num_vars):
-    for j in range(data.num_vars):
-        if i <= j:
-            cov_mask[i,j] = 1
-print("----- Testing FeatureCovarianceDataScratch -----")
-cov_data = FeatureCovarianceDataScratch(data, cov_mask, batch_size=3, gen=gen)
-for batch in cov_data.train_dataloader():
-    idx, cov = batch
-    print(idx, cov)
-print("----- Testing FeatureCovarianceDataConcise -----")
-cov_data = FeatureCovarianceDataConcise(data, cov_mask, batch_size=3, gen=gen)
-for batch in cov_data.train_dataloader():
-    idx, cov = batch
-    print(idx, cov)
-
-# Train low rank covariance model
-print("----- Testing LowRankCovarianceModelScratch -----")
-model = LowRankCovarianceModelScratch(data.num_vars, data.num_facs, lr=0.05)
-trainer = Trainer(max_epochs=5000)
-start = time.time()
-trainer.fit(model, cov_data)
-end = time.time()
-print(f"Elapsed Time: {end - start}")
-print("----- Testing LowRankCovarianceModelConcise -----")
-model = LowRankCovarianceModelConcise(data.num_vars, data.num_facs, lr=0.05)
-trainer = Trainer(max_epochs=5000)
-start = time.time()
-trainer.fit(model, cov_data)
-end = time.time()
-print(f"Elapsed Time: {end - start}")
-
-# NOTE: ModelScratch is slightly faster than ModelConcise

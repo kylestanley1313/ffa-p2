@@ -1,5 +1,6 @@
 #!/bin/bash
 #SBATCH --account=muh10
+#SBATCH --gpus=2
 #SBATCH --job-name=testing
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=kms8227@psu.edu

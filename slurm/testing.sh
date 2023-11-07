@@ -27,5 +27,5 @@ source $CONDA_BASE/etc/profile.d/conda.sh
 conda activate ffa-p2-priv
 
 echo "Running test script..."
-python testing.py
+python testing.py --to_test=cuda
 echo "DONE!"

@@ -11,6 +11,12 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from typing import Generator, List
 
+
+# NOTE: If you must ctrl-c to terminate execution, you still need to kill
+# processes on the command line: 
+#   $ ps -ef | grep ffa-p2-priv
+#   $ kill -9 <pid>
+
 # PLAN: 
 #   - Implement for 1-dim FFA
 #   - Implement for D-dim FFA
@@ -96,12 +102,6 @@ def read_data(dir):
 
 # -------------------- DISTRIBUTION -------------------- #
 
-# def init_process(addr, port, rank, world_size, dir_data, delta, fcn, backend):
-#     os.environ['MASTER_ADDR'] = addr  # TODO: How to choose ADDR/PORT?
-#     os.environ['MASTER_PORT'] = port
-#     dist.init_process_group(backend, rank=rank, world_size=world_size)
-#     fcn(rank, world_size, dir_data, delta)
-
 def init_process(rank, world_size, dir_data, delta, num_facs, max_epochs, seeds, fcn, backend):
     path = '/tmp/sharedfile'
     if os.path.exists(path):
@@ -134,7 +134,7 @@ def gen_train_points(grid_size: int, delta: float) -> torch.Tensor:
 
 
 def block_train_points(
-        train_points: torch.Tensor, 
+        points: torch.Tensor, 
         grid_size: int, 
         num_workers: int,
         gen: torch.Generator
@@ -147,14 +147,19 @@ def block_train_points(
         blocks[idx:(idx+cnt)] = torch.ones(cnt) * b
         idx += cnt
     blocks = blocks[torch.randperm(grid_size, generator=gen)]
-    blocks = blocks[train_points]
+    b0 = blocks[points[:,0]]
+    b1 = blocks[points[:,1]]
+    blocks = torch.column_stack((b0, b1))
 
     # Make blocks[k,0] > blocks[k,1] for all k to make blocks lower triangular
-    temp = blocks.clone()
+    temp_blocks = blocks.clone()
+    temp_points = points.clone()
     mask = blocks[:,0] < blocks[:,1]
-    blocks[mask, 0] = temp[mask, 1]
-    blocks[mask, 1] = temp[mask, 0]
-    return torch.cat((train_points, blocks), 1)  # cols: x[0], x[1], b[0], b[1]
+    blocks[mask, 0] = temp_blocks[mask, 1]
+    blocks[mask, 1] = temp_blocks[mask, 0]
+    points[mask, 0] = temp_points[mask, 1]
+    points[mask, 1] = temp_points[mask, 0]
+    return torch.cat((points, blocks), 1)  # cols: x[0], x[1], b[0], b[1]
 
 
 def gen_strata(num_workers):
@@ -173,6 +178,7 @@ def gen_strata(num_workers):
     return strata
 
 
+
 def run(rank, world_size, dir_data, delta, num_facs, max_epochs, seeds):
 
     seed = seeds[rank]
@@ -180,7 +186,6 @@ def run(rank, world_size, dir_data, delta, num_facs, max_epochs, seeds):
     path = os.path.join(dir_data, 'data-0.pt')
     grid_size = torch.load(path).shape[0]
     num_workers = world_size - 1
-    done = torch.zeros(1, dtype=torch.bool)
 
     if rank == 0:
 
@@ -200,75 +205,22 @@ def run(rank, world_size, dir_data, delta, num_facs, max_epochs, seeds):
             dist.send(torch.tensor(worker_points.shape, dtype=torch.int32), r)
             dist.send(worker_points, r)
 
-        # Initialize and send L
+        # Initialize L via SVD(?)
         # TODO: Better initialization? SVD on data matrix?
         l = torch.randn(
             grid_size, num_facs, 
             generator=gen, 
             dtype=torch.float64, 
-            requires_grad=True
+            requires_grad=False
         )
-        for r in range(1, world_size):
-            dist.send(l, r)
 
-
-        epochs = 0
-        rand = random.Random(seed)
-        while True:  # > epoch
-
-            # Send blocks to workers
-            rand.shuffle(strata)
-            for stratum in strata:  # > subepoch
-
-                # Send blocks to workers
-                for r in range(1, num_workers + 1):
-                    block = stratum[r - 1]
-                    dist.send(torch.tensor(block, dtype=torch.int32), r)
-
-                # Receive and combine updated L blocks from each worker
-                # NOTE: Must wait until all updates have been received before proceeding
-
-                # Send updated L to each worker
-
-            # Send updated convergence status to workers
-            # TODO: Parallelized convergence evaluation
-            epochs += 1
-            if epochs == max_epochs:
-                done[0] = True
-            for r in range(1, num_workers + 1):
-                dist.send(tensor=done, dst=r)
-            if done[0]:
-                break
-
-
-        # Optimize (epoch): [while not converged]
-        #   - Choose stratum sequence
-        #   - For stratum in stratum sequence: 
-        #       * Send blocks
-        #       * Receive updated L blocks
-        #       * Stitch together L blocks
-        #       * Send updated L
-        #   - Send end of epoch message
-        #   - Check convergence status
-        #   - Send convergence status
-        #   - If converged; exit(?) process
-    
     else: 
 
         # Receive training points from main process
         shape = torch.zeros(2, dtype=torch.int32)
         dist.recv(shape, 0)
-        shape = tuple(shape.tolist())
-        points = torch.zeros(shape, dtype=torch.int32)
+        points = torch.zeros(shape.tolist(), dtype=torch.int32)
         dist.recv(tensor=points, src=0)
-
-        # Receive loadings from main process
-        l = torch.zeros(
-            grid_size, num_facs, 
-            dtype=torch.float64, 
-            requires_grad=True
-        )
-        dist.recv(tensor=l, src=0)
 
         # Compute covariance of training points
         # NOTE: c_{ij} = \frac{1}{N-1} [T_1 - \frac{T_2 T_3}{N}]
@@ -291,54 +243,154 @@ def run(rank, world_size, dir_data, delta, num_facs, max_epochs, seeds):
         cov = (t1 - t2 * t3 / n) / (n - 1)
         print(f"Rank {rank} covariance: {cov}\n")
 
-        # Optimize until main process says to stop
-        strata_per_epoch = 2 * num_workers + 1
-        block = torch.zeros(2, dtype=torch.int32)
-        while True: 
+        # Initialize L as empty matrix
+        # TODO: Should we use autograd? If so, how?
+        l = torch.zeros(
+            grid_size, num_facs, 
+            dtype=torch.float64, 
+            requires_grad=False
+        )
 
-            # Iteratively perform SGD on blocks then send updated L to main process
-            for _ in range(strata_per_epoch):
-                dist.recv(block, 0)
-                print(f"----- Rank {rank} | block = {block.tolist()} -----\n")
+    # Broadcast L
+    dist.broadcast(tensor=l, src=0)
+
+    # Optimize
+    epoch = 0
+    done = False
+    while not done:  # > epoch
+
+        # Set stratum sequence and broadcast to blocks
+        if rank == 0:
+            rand = random.Random(seed)
+            rand.shuffle(strata)
+        else:
+            strata_per_epoch = 2 * num_workers + 1
+            strata = [None] * strata_per_epoch
+        dist.broadcast_object_list(strata, src=0)
+
+        for stratum in strata:  # > subepoch
+
+            print(f"----- rank = {rank} | stratum = {stratum} -----")
+
+            if rank != 0:
 
                 # Perform SGD on block (pure? mini-batch?)
+                block = stratum[rank - 1]
                 mask = torch.logical_and(
-                    points[:,2] == block[0], 
-                    points[:,3] == block[1]
+                        points[:,2] == block[0], 
+                        points[:,3] == block[1]
                 )
                 points_block = points[mask, 0:2]
                 cov_block = cov[mask]
-                l_b1 = l[points_block[:,0],:]
-                l_b2 = l[points_block[:,1],:]
-                print(f"Rank {rank} points_block = \n{points_block}\n")
-                print(f"Rank {rank} l_b1 = \n{l_b1}\n")
-                print(f"Rank {rank} l_b2 = \n{l_b2}\n")
+                idx0 = torch.unique(points_block[:,0])
+                idx1 = torch.unique(points_block[:,1])
+                if block[0] == block[1]:
+                    idx = torch.unique(torch.cat((idx0, idx1)))
+                    lb = l[idx,:]
 
-                # Send L to main process
+                    # TODO: On-diagonal block update
 
-            # Receive updated L
+                    # Send L block to main process
+                    sz = torch.tensor([len(idx)], dtype=torch.int32)
+                    req_sz = dist.isend(sz, 0)
+                    req_idx = dist.isend(idx, 0)
+                    req_lb = dist.isend(lb, 0)
+                    req_sz.wait()
+                    req_idx.wait()
+                    req_lb.wait()
+                    
+                else:
+                    lb0 = l[idx0,:]
+                    lb1 = l[idx1,:]
 
-            # Compute local loss 
+                    # TODO: Off-diagonal block update
 
-            dist.recv(done, 0)
-            print(f"done = {done[0]}")
-            if done[0]:
-                print("DONE!")
-                break
+                    # Send L blocks to main process
+                    sz0 = torch.tensor([len(idx0)], dtype=torch.int32)
+                    sz1 = torch.tensor([len(idx1)], dtype=torch.int32)
+                    req_sz0 = dist.isend(sz0, 0)
+                    req_sz1 = dist.isend(sz1, 0)
+                    req_idx0 = dist.isend(idx0, 0)
+                    req_idx1 = dist.isend(idx1, 0)
+                    req_lb0 = dist.isend(lb0, 0)
+                    req_lb1 = dist.isend(lb1, 0)
+                    req_sz0.wait()
+                    req_sz1.wait()
+                    req_idx0.wait()
+                    req_idx1.wait()
+                    req_lb0.wait()
+                    req_lb1.wait()
+
+            else: 
+
+                # Receive updated L blocks from workers
+                num_l_blocks = len(set(b for block in stratum for b in block))
+                idx = [None] * num_l_blocks
+                lb = [None] * num_l_blocks
+                reqs_idx = [None] * num_l_blocks
+                reqs_lb = [None] * num_l_blocks
+                for r in range(1, world_size):
+                    block = stratum[r - 1]
+
+                    if block[0] == block[1]:
+                        i = r - 1
+
+                        sz = torch.zeros(1, dtype=torch.int32)
+                        req_sz = dist.irecv(sz, src=r)
+                        req_sz.wait()
+
+                        idx[i] = torch.zeros(sz.item(), dtype=torch.int32)
+                        reqs_idx[i] = dist.irecv(idx[i], src=r)                        
+
+                        lb[i] = torch.zeros(sz.item(), num_facs, dtype=torch.float64, requires_grad=True)
+                        reqs_lb[i] = dist.irecv(lb[i], src=r)     
+
+                    else: 
+                        i = 2*(r - 1)
+                        
+                        sz0 = torch.zeros(1, dtype=torch.int32)
+                        sz1 = torch.zeros(1, dtype=torch.int32)
+                        req_sz0 = dist.irecv(sz0, src=r)
+                        req_sz1 = dist.irecv(sz1, src=r)
+                        req_sz0.wait()
+                        req_sz1.wait()
+                        
+                        idx[i] = torch.zeros(sz0.item(), dtype=torch.int32)
+                        idx[i+1] = torch.zeros(sz1.item(), dtype=torch.int32)
+                        reqs_idx[i] = dist.irecv(idx[i], src=r)
+                        reqs_idx[i+1] = dist.irecv(idx[i+1], src=r)
+                        
+                        lb[i] = torch.zeros(sz0.item(), num_facs, dtype=torch.float64, requires_grad=False)
+                        lb[i+1] = torch.zeros(sz1.item(), num_facs, dtype=torch.float64, requires_grad=False)
+                        reqs_lb[i] = dist.irecv(lb[i], src=r) 
+                        reqs_lb[i+1] = dist.irecv(lb[i+1], src=r) 
+                
+                # Wait for each request to complete
+                for r_idx, r_lb in zip(reqs_idx, reqs_lb):
+                    r_idx.wait()
+                    r_lb.wait()
+
+                # Update L with L blocks
+                l_old = l.clone()  # DEBUG
+                for idx_, lb_ in zip(idx, lb):
+                    l[idx_, :] = lb_
+                print(f"torch.equal(l, l_old) = {torch.equal(l, l_old)}")  # DEBUG
+                
+            # Broadcast L to all workers
+            dist.barrier()
+            dist.broadcast(l, src=0)
 
 
-        # Optimize:
-        #   - Receive L
-        #   - If end of epoch:
-        #       * compute local loss on all of this worker's blocks
-        #       * send local loss
-        #   - Receive convergence status 
-        #   - If converged: exit(?) process
-        #   - Receive block
-        #   - Run SGD on block
-        #   - Send updated block to main
+        # Check for convergence
+        epoch += 1
+        if epoch == max_epochs:
+            done = True
+
 
     dist.destroy_process_group()
+
+
+
 
 
 

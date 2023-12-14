@@ -22,56 +22,23 @@ NOTE: (DistributedSampler Data Dropping/Adding)
 
 import argparse
 import os
-import math
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-import shutil
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
-from scipy.sparse import diags
 from torch.nn.functional import mse_loss
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Dataset, DistributedSampler, Sampler, TensorDataset
-from typing import Generator, Iterator, List, Optional, Tuple
+from torch.utils.data import Dataset, Sampler
+from typing import List
+
+from utils import gen_seeds, gen_points, read_tensors
+
 
 
 # -------------------- UTILITIES -------------------- #
-
-
-def gen_seeds(gen, size):
-    seeds = torch.randint(
-        high=torch.iinfo(torch.int32).max, 
-        size=(size,), 
-        generator=gen, 
-        dtype=torch.int32
-    )
-    if size == 1: 
-        return seeds.tolist()[0]
-    else: 
-        return seeds.tolist()
-    
-
-def build_loadings(fcns, num_vars):
-    """Builds a loading matrix with `num_vars` rows and `len(fcns)` columns 
-    from `fcns`."""
-    x = torch.linspace(0, 1, num_vars, dtype=torch.float64)
-    num_facs = len(fcns)
-    loads = torch.zeros(num_vars, num_facs, dtype=torch.float64)
-    for k in range(num_facs):
-        loads[:,k] = fcns[k](x)
-    return loads
-
-
-def sine_loading(x):
-    return torch.sin(2 * math.pi * x)
-
-
-def cosine_loading(x):
-    return torch.cos(2 * math.pi * x)
-
 
 def create_second_difference_matrix(n):
 
@@ -120,7 +87,6 @@ def roughness_penalty(loads: torch.Tensor, diff_mat: torch.Tensor):
     return torch.trace(loads.t() @ diff_mat @ loads)
 
 
-# TODO: Why isn't this being incorporated into optimization.step()?
 def objective(
         preds: torch.Tensor, 
         cov: torch.Tensor, 
@@ -135,42 +101,6 @@ def objective(
         return err + alpha * pen
     else: 
         return err
-
-    
-
-
-# -------------------- DATA -------------------- #
-
-def simulate_ffm_data(
-        loadings: torch.Tensor,
-        err_sds: torch.Tensor, 
-        num_train: int,
-        num_val: int,
-        batch_size: int,
-        gen: torch.Generator = torch.Generator(),
-    ):
-    num_vars, num_facs = loadings.shape
-    n = num_train + num_val
-    while n > 0:
-        n_batch = min(batch_size, n) 
-        facs = torch.normal(0, 1, (num_facs, n_batch), dtype=torch.float64, generator=gen)
-        errs = torch.normal(0, 1, (num_vars, n_batch), dtype=torch.float64, generator=gen)
-        errs *= err_sds.view(-1, 1)
-        data = torch.matmul(loadings, facs) + errs
-        yield data
-        n -= n_batch
-
-
-def write_generated_tensor(tensor: Generator, dir: str, prefix: str):
-    for i, batch in enumerate(tensor):
-        path = os.path.join(dir, f'{prefix}-{i}.pt')
-        torch.save(batch, path)
-
-def read_tensors(dir, prefix):
-    files = os.listdir(dir)
-    files = sorted([f for f in files if f.startswith(prefix)])
-    for f in files:
-        yield torch.load(os.path.join(dir, f))
 
 
 # -------------------- DISTRIBUTION -------------------- #
@@ -199,71 +129,6 @@ def init_process(
         rank, world_size, dir_data,
         num_vars, num_facs, alpha, lr, max_epochs, seeds
     )
-
-
-# -------------------- DATA PREP -------------------- #
-
-
-def gen_cartesian_prod(grid):
-    """Yields elements of the cartesian product grid x grid in batches of
-    size len(grid)."""
-    grid_size = len(grid)
-    for i in range(0, grid_size):
-        idx = torch.cartesian_prod(
-            torch.tensor([i], dtype=torch.int32),
-            torch.arange(grid_size, dtype=torch.int32)
-        )
-        yield torch.column_stack((grid[idx[:,0]], grid[idx[:,1]]))
-
-
-def gen_points(num_vars: int, delta: float, batch_size: int) -> Generator:
-    """Yields training points for a num_vars-by-num_vars covariance matrix in
-    batches."""
-    if batch_size < num_vars: 
-        raise Exception("Must have batch_size >= num_vars")
-
-    grid = torch.arange(num_vars, dtype=torch.int32)
-    bandwidth = math.ceil(num_vars * delta)
-
-    start_new_batch = True
-    leftovers = None
-    for cp_batch in gen_cartesian_prod(grid): 
-
-        if start_new_batch:
-            start_new_batch = False
-            batch = torch.zeros(batch_size, 2, dtype=torch.int32)
-            start_idx = 0
-            num_leftovers = len(leftovers) if leftovers is not None else 0
-            if num_leftovers > 0:
-                batch[:num_leftovers] = leftovers
-                start_idx = num_leftovers
-                leftovers = None
-
-        keep = cp_batch[:,1] < cp_batch[:,0] - bandwidth
-        cp_batch = cp_batch[keep]
-        num_to_keep = len(cp_batch)
-        num_to_inc = min(num_to_keep, batch_size - start_idx)
-        num_to_exc = max(0, num_to_keep - num_to_inc)
-        batch[start_idx:(start_idx + num_to_inc)] = cp_batch[:num_to_inc]
-        start_idx += num_to_inc
-        
-        # Iteration Cases: 
-        #  [Any]
-        #   (1) cb_batch overfills batch --> start_idx == batch_size and num_to_exc > 0
-        #   (2) cb_batch precisely fills batch --> start_idx == batch_size and num_to_exc < 0
-        #  [Last]
-        #   (3) cb_batch underfills batch --> start_idx < batch_size
-        if start_idx == batch_size:  # if (1) or (2), yield saturated batch
-            yield batch
-            start_new_batch = True
-            if num_to_exc > 0:
-                leftovers = cp_batch[-num_to_exc:]
-    
-    if leftovers is not None:  # if (2), yield leftovers
-        yield leftovers
-    elif start_idx < batch_size:  # if (3), yield underfilled batch
-        yield batch[:start_idx]
-
 
 
 # -------------------- MODULES -------------------- #
@@ -352,44 +217,6 @@ class BasicDataLoader(object):
             yield self.dataset[curr_batch[:cnt]]
 
 
-# TODO: My custom Sampler does not play nicely with PyTorch's DataLoader. 
-# Figure out why this is...
-
-# dataset = DistributedCovarianceDataset('./data/ffa', 0, 10)
-# print(f"len(dataset) = {len(dataset)}")
-# print(f"dataset.rank_counts = {dataset.rank_counts}")
-
-
-# gen = torch.Generator().manual_seed(12345)
-# sampler = DistributedDatsetSampler(dataset, gen)
-# dataloader = BasicDataloader(dataset, batch_size=3, sampler=sampler)
-# # dataloader = DataLoader(dataset, batch_size=4, sampler=sampler)
-
-# epoch = 0
-# while epoch < 3:
-
-#     print(f"----- epoch = {epoch} -----")
-#     cnt = 0
-#     for batch in dataloader: 
-#         cnt += len(batch[0])
-#     print(f"cnt = {cnt}")
-
-#     epoch += 1
-
-# epoch = 0
-# while epoch < 3:
-#     print(f"----- epoch = {epoch} -----")
-#     cnt = 0
-#     for i in sampler: 
-#         cnt += 1
-#     print(f"cnt = {cnt}")
-#     epoch += 1
-
-# exit(0)
-        
-
-
-
 # -------------------- RUN -------------------- #
 
 
@@ -409,42 +236,9 @@ def run(
     print(f"rank = {rank} | seed = {seed}")
     gen = torch.Generator().manual_seed(seed)
 
-    # ---------- CUSTOM ---------- #
     dataset = DistributedCovarianceDataset(dir, rank, world_size)
     sampler = DistributedDatsetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=3, sampler=sampler)
-    # ---------------------------- #
-
-
-    # ---------- STANDARD ---------- #
-    # if rank == 0:
-
-    #     all_points = read_tensors(dir, 'points')
-    #     all_cov = read_tensors(dir, 'cov')
-    #     points_list = []
-    #     cov_list = []
-    #     for p, c in zip(all_points, all_cov):
-    #         points_list.append(p)
-    #         cov_list.append(c)
-    #     points = torch.row_stack(points_list)
-    #     cov = torch.cat(cov_list)
-
-    #     for r in range(1, world_size):
-    #         dist.send(torch.tensor(len(points), dtype=torch.int32), r)    
-    #         dist.send(points, r)
-    #         dist.send(cov, r)
-    # else: 
-    #     num_points = torch.zeros(1, dtype=torch.int32)
-    #     dist.recv(num_points, 0)
-    #     points = torch.zeros(num_points.item(), 2, dtype=torch.int32)
-    #     cov = torch.zeros(num_points.item(), dtype=torch.float64)
-    #     dist.recv(points, 0)
-    #     dist.recv(cov, 0)
-
-    # dataset = TensorDataset(points, cov)
-    # sampler = DistributedSampler(dataset)
-    # dataloader = DataLoader(dataset, batch_size=2, sampler=sampler)
-    # ------------------------------ #
 
     model = LowRankCovariance(num_vars, num_facs, gen)
     model = DDP(model)
@@ -465,17 +259,6 @@ def run(
             loss.backward()
             optimizer.step()
 
-
-        # ---------- STANDARD ---------- #
-        # if rank == 0: 
-        #     preds = model(points[:,0], points[:,1])
-        #     loss = criterion(preds, cov)
-        #     print(f"epoch = {epoch} | loss = {loss}")
-        # ------------------------------ #
-
-
-
-        # ---------- CUSTOM ----------- #
         # Compute and communicate loss
         preds = model(dataset.points[:,0], dataset.points[:,1])
         loss = objective(preds, dataset.cov, model, alpha, diff_mat)
@@ -487,7 +270,6 @@ def run(
                 dist.recv(worker_loss, r)
                 loss += worker_loss.item()
             print(f"epoch {epoch} | loss = {loss}")
-        # ------------------------------ #
 
     # Save model
     if rank == 0:
@@ -503,17 +285,12 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', '--backend', default='gloo')
     parser.add_argument('-ws', '--world_size', type=int)
-    parser.add_argument('-sn', '--simulate_new', action = 'store_true')
     args = parser.parse_args()
 
     # Configure globals
     dir_data = './data/ffa'
-    num_train = 100
-    num_val = 0
-    data_batch_size = 50
     num_vars = 30
-    load_fcns = [sine_loading, cosine_loading]
-    num_facs = len(load_fcns)
+    num_facs = 2
     alpha = 0.1
     cov_batch_size_per_proc = int((num_vars ** 2) / 18)
     delta = 0.1
@@ -524,36 +301,6 @@ if __name__ == '__main__':
     seed = 12345
     gen = torch.Generator().manual_seed(seed)
     seeds = gen_seeds(gen, args.world_size)
-
-    # ---------- DATA SIMULATION ---------- #
-
-    if args.simulate_new: 
-
-        print(f"Simulating new data...")
-
-        # Delete files from directory
-        shutil.rmtree(dir_data)
-        os.makedirs(dir_data)
-
-        sim_seed = gen_seeds(gen, 1)
-        gen = torch.Generator().manual_seed(sim_seed)
-
-        loadings = build_loadings(load_fcns, num_vars)
-        err_sds = 0.2 * torch.ones(loadings.shape[0], dtype=torch.float64)
-        data = simulate_ffm_data(
-            loadings, 
-            err_sds,
-            num_train=num_train,
-            num_val=num_val,
-            batch_size=data_batch_size,
-            gen=gen
-        )
-
-        write_generated_tensor(data, dir_data, 'data')
-
-        print("DONE!")
-    else: 
-        print("Using existing simulated data.")
 
     
     # ---------- COVARIANCE PREPARATION ---------- $

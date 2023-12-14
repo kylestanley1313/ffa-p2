@@ -12,6 +12,8 @@ import torch.multiprocessing as mp
 from torch.nn.functional import mse_loss
 from typing import Generator, List
 
+from utils import read_tensors
+
 
 
 # PLAN: 
@@ -45,42 +47,6 @@ def gen_seeds(gen, size):
         return seeds.tolist()
 
 
-
-# -------------------- DATA -------------------- #
-
-
-def simulate_ffm_data(
-        loadings: torch.Tensor,
-        err_sds: torch.Tensor, 
-        num_train: int,
-        num_val: int,
-        batch_size: int,
-        gen: torch.Generator = torch.Generator(),
-    ):
-    num_vars, num_facs = loadings.shape
-    n = num_train + num_val
-    samps = 0
-    while samps < n: 
-        n_batch = min(batch_size, n - batch_size)
-        facs = torch.normal(0, 1, (num_facs, n_batch), dtype=torch.float64, generator=gen)
-        errs = torch.normal(0, 1, (num_vars, n_batch), dtype=torch.float64, generator=gen)
-        errs *= err_sds.view(-1, 1)
-        data = torch.matmul(loadings, facs) + errs
-        yield data
-        samps += batch_size
-
-
-def write_data(data: Generator, dir: str):
-    for i, batch in enumerate(data):
-        path = os.path.join(dir, f'data-{i}.pt')
-        torch.save(batch, path)
-
-
-def read_data(dir):
-    for name in os.listdir(dir):
-        yield torch.load(os.path.join(dir, name))
-
-        
 
 # -------------------- DISTRIBUTION -------------------- #
 
@@ -218,7 +184,7 @@ def run(rank, world_size, dir_data, delta, num_facs, lr, max_epochs, seeds):
         t2 = torch.zeros(num_points, dtype=torch.float64)
         t3 = torch.zeros(num_points, dtype=torch.float64)
         n = 0
-        data = read_data(dir_data)
+        data = read_tensors(dir_data, 'data')
         for batch in data: 
             n += batch.shape[1]
             for i in range(num_points): 
@@ -407,15 +373,11 @@ def run(rank, world_size, dir_data, delta, num_facs, lr, max_epochs, seeds):
 
 
 
-
-
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-b', '--backend', default='gloo')
     parser.add_argument('-ws', '--world_size', type=int)
-    parser.add_argument('-sn', '--simulate_new', action = 'store_true')
     args = parser.parse_args()
 
     # Configure globals
@@ -429,45 +391,6 @@ if __name__ == '__main__':
     seed = 12345
     gen = torch.Generator().manual_seed(seed)
     seeds = gen_seeds(gen, args.world_size)
-
-
-    # ---------- SIMULATION ---------- #
-
-    if args.simulate_new: 
-
-        print(f"Simulating new data...")
-
-        sim_seed = gen_seeds(gen, 1)
-        gen = torch.Generator().manual_seed(sim_seed)
-
-        # loadings = torch.tensor([
-        #     [3, 0.1],
-        #     [-2, 0.3],
-        #     [0.1, 2.5], 
-        #     [-0.2, 4],
-        #     [-0.3, -3],
-        #     [2, 0.5],
-        #     [-2, 0.3],
-        #     [0.1, 2.5], 
-        #     [-0.2, 4],
-        #     [-0.3, -3],
-        #     [2, 0.5]
-        # ], dtype=torch.float64)
-        loadings = torch.randn(100, 3, dtype=torch.float64, generator=gen)
-        err_sds = 0.2 * torch.ones(loadings.shape[0], dtype=torch.float64)
-        data = simulate_ffm_data(
-            loadings, 
-            err_sds,
-            num_train=200,
-            num_val=100,
-            batch_size=50,
-            gen=gen
-        )
-        write_data(data, dir_data)
-
-        print("DONE!")
-    else: 
-        print("Using existing simulated data.")
 
 
     # ---------- DISTRIBUTED RUN ---------- #

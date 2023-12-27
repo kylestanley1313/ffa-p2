@@ -1,3 +1,4 @@
+import argparse
 import os
 import math
 import shutil
@@ -48,8 +49,14 @@ def simulate_ffm_data(
 
 if __name__ == '__main__':
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '-d', '--dir_data', 
+        help="Directory in which simulated data will be stored."
+    )
+    args = parser.parse_args()
+
     # Configure globals
-    dir_data = './data/ffa'
     num_train = 100
     num_val = 0
     data_batch_size = 50
@@ -65,8 +72,9 @@ if __name__ == '__main__':
     print(f"Simulating new data...")
 
     # Delete files from directory
-    shutil.rmtree(dir_data)
-    os.makedirs(dir_data)
+    if os.path.exists(args.dir_data):
+        shutil.rmtree(args.dir_data)
+    os.makedirs(args.dir_data)
 
     loadings = build_loadings(load_fcns, num_vars)
     err_sds = 0.2 * torch.ones(loadings.shape[0], dtype=torch.float64)
@@ -79,6 +87,6 @@ if __name__ == '__main__':
         gen=gen
     )
 
-    write_generated_tensor(data, dir_data, 'data')
+    write_generated_tensor(data, args.dir_data, 'data')
 
     print("DONE!")

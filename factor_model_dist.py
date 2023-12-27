@@ -1,18 +1,17 @@
 import argparse
-import inspect
 import math
 import numpy as np
 import os
 import random
-import socket
-import time
 import torch
+import torch.nn as nn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.functional import mse_loss
-from typing import Generator, List
+from torch.utils.data import Dataset, Sampler
+from typing import List
 
-from utils import read_tensors
+from utils import gen_points, gen_seeds, read_tensors
 
 
 
@@ -30,27 +29,121 @@ from utils import read_tensors
 # TODO: Find more permanent solution to this.
 
 
+# -------------------- MODULES -------------------- #
 
-# -------------------- UTILITIES -------------------- #
+class DistributedStratifiedCovarianceDataset(Dataset):
+
+    # TODO: Do we need each rank to have same number of points?
+    #       Is this a requirement of ring all-reduce?
+
+    def __init__(self, dir: str, rank: int, world_size: int):
+
+        # Read in this rank's data
+        points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
+        strat = torch.load(os.path.join(dir, f'stratum-{rank}.pt'))
+        cov = torch.load(os.path.join(dir, f'cov-{rank}.pt'))
+
+        # Create dictionaries that map stratum to points/cov
+        self.points = None
+        self.cov = None
+        self.strat_points = {}
+        self.strat_cov = {}
+        num_strata = 2 * world_size + 1
+        for s in range(num_strata):
+            mask = strat == s
+            self.strat_points[s] = points[mask]
+            self.strat_cov[s] = cov[mask]
+
+    def __len__(self):
+        return len(self.cov)
+
+    def __getitem__(self, index):
+        return self.points[index], self.cov[index]
+    
+    def set_stratum(self, stratum):
+        self.points = self.strat_points[stratum]
+        self.cov = self.strat_cov[stratum]
+    
+
+class DistributedStratifiedDatasetSampler(Sampler):
+
+    def __init__(
+            self, 
+            dataset: DistributedStratifiedCovarianceDataset, 
+            gen: torch.Generator
+        ) -> None:
+        self.dataset = dataset
+        self.gen = gen
+
+    def __iter__(self):
+        idx = torch.randperm(len(self.dataset), generator=self.gen)
+        return iter(idx.tolist())
+    
+
+# NOTE: Should this inherit from DataLoader and implement a set_stratum method?
+class StratifiedDataLoader(object):
+
+    def __init__(
+            self, 
+            dataset: DistributedStratifiedCovarianceDataset, 
+            sampler: DistributedStratifiedDatasetSampler, 
+            batch_size: int
+        ) -> None:
+        self.dataset = dataset
+        self.sampler = sampler
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        curr_batch = torch.zeros(self.batch_size, dtype=torch.int32)
+        cnt = 0
+        for idx in self.sampler:
+            curr_batch[cnt] = idx
+            cnt += 1
+            if cnt == self.batch_size:
+                yield self.dataset[curr_batch]
+                curr_batch = torch.zeros(self.batch_size, dtype=torch.int32)
+                cnt = 0
+
+        # Yield the last batch if it's not a complete batch
+        if cnt > 0:
+            yield self.dataset[curr_batch[:cnt]]
+
+    def set_stratum(self, stratum):
+        self.dataset.set_stratum(stratum)
 
 
-def gen_seeds(gen, size):
-    seeds = torch.randint(
-        high=torch.iinfo(torch.int32).max, 
-        size=(size,), 
-        generator=gen, 
-        dtype=torch.int32
-    )
-    if size == 1: 
-        return seeds.tolist()[0]
-    else: 
-        return seeds.tolist()
+# TODO: Move sync_model functionality into this class
+class LowRankCovariance(nn.Module):
+
+    def __init__(self, num_vars: int, num_facs: int, gen: torch.Generator):
+        super().__init__()
+        self.num_facs = num_facs
+        self.loads = nn.Embedding(num_vars, num_facs, dtype=torch.float64)  # TODO: Custom initialization (SVD?)
+        self.loads.weight.data = torch.randn(num_vars, num_facs, generator=gen, dtype=torch.float64)
+
+    def forward(self, idx0, idx1):
+        loads0 = self.loads(idx0)
+        loads1 = self.loads(idx1)
+        return (loads0 * loads1).sum(dim=1)  # NOTE: Has length len(idx0)
+    
+    def get_loads(self, idx=None):
+        if idx is None:
+            return self.loads.weight.data
+        else:
+            return self.loads.weight.data[idx]
+   
+    def set_loads(self, loads, idx=None):
+        if idx is None:
+            self.loads.weight.data = loads
+        else:
+            self.loads.weight.data[idx] = loads
+    
 
 
 
 # -------------------- DISTRIBUTION -------------------- #
 
-def init_process(rank, world_size, dir_data, delta, num_facs, lr, max_epochs, seeds, fcn, backend):
+def init_process(rank, world_size, dir_data, num_vars, num_facs, lr, max_epochs, seeds, fcn, backend):
     path = '/tmp/sharedfile'
     if os.path.exists(path):
         os.remove(path)
@@ -58,7 +151,7 @@ def init_process(rank, world_size, dir_data, delta, num_facs, lr, max_epochs, se
         backend, init_method=f'file://{path}',
         rank=rank, world_size=world_size
     )
-    fcn(rank, world_size, dir_data, delta, num_facs, lr, max_epochs, seeds)
+    fcn(rank, world_size, dir_data, num_vars, num_facs, lr, max_epochs, seeds)
 
 
 # -------------------- RUN -------------------- #
@@ -69,45 +162,6 @@ def fair_allocate(num_items: int, num_groups: int) -> List[int]:
     remainder = num_items % num_groups
     out[0:remainder] = [x + 1 for x in out[0:remainder]]
     return out
- 
-
-def gen_train_points(grid_size: int, delta: float) -> torch.Tensor:
-    """Generates covariance matrix training points for data of a given 
-    grid_size (M) and delta (bandwidth)."""
-    grid = torch.arange(grid_size, dtype=torch.int32)
-    points = torch.cartesian_prod(grid, grid)
-    bandwidth = math.ceil(grid_size * delta)
-    keep = points[:,1] < points[:,0] - bandwidth
-    return points[keep,:]
-
-
-def block_train_points(
-        points: torch.Tensor, 
-        grid_size: int, 
-        num_workers: int,
-        gen: torch.Generator
-    ) -> torch.Tensor:
-    """Assigns (lower-triangular) blocks to training points."""
-    block_cnts = fair_allocate(grid_size, 2*num_workers)
-    idx = 0
-    blocks = torch.zeros(grid_size, dtype=torch.int32)
-    for b, cnt in enumerate(block_cnts):
-        blocks[idx:(idx+cnt)] = torch.ones(cnt) * b
-        idx += cnt
-    blocks = blocks[torch.randperm(grid_size, generator=gen)]
-    b0 = blocks[points[:,0]]
-    b1 = blocks[points[:,1]]
-    blocks = torch.column_stack((b0, b1))
-
-    # Make blocks[k,0] > blocks[k,1] for all k to make blocks lower triangular
-    temp_blocks = blocks.clone()
-    temp_points = points.clone()
-    mask = blocks[:,0] < blocks[:,1]
-    blocks[mask, 0] = temp_blocks[mask, 1]
-    blocks[mask, 1] = temp_blocks[mask, 0]
-    points[mask, 0] = temp_points[mask, 1]
-    points[mask, 1] = temp_points[mask, 0]
-    return torch.cat((points, blocks), 1)  # cols: x[0], x[1], b[0], b[1]
 
 
 def gen_strata(num_workers):
@@ -127,249 +181,121 @@ def gen_strata(num_workers):
 
 
 
-def run(rank, world_size, dir_data, delta, num_facs, lr, max_epochs, seeds):
+def sync_model(
+        rank: int, 
+        world_size: int, 
+        model: LowRankCovariance, 
+        points: torch.Tensor
+    ):
 
+    idx0 = torch.unique(points[:,0])
+    idx1 = torch.unique(points[:,1])
+    idx = torch.unique(torch.cat((idx0, idx1)))
+    sz = torch.tensor([len(idx)], dtype=torch.int32)
+    loads = model.get_loads(idx)
+    other_ranks = [r for r in range(world_size) if r != rank]
+    
+    # Send/receive `sz` to/from all other ranks
+    sz_in = {r: torch.zeros(1, dtype=torch.int32) for r in other_ranks}
+    reqs_sz_out = {}
+    reqs_sz_in = {}
+    for r in other_ranks:
+        reqs_sz_out[r] = dist.isend(sz, r)
+        reqs_sz_in[r] = dist.irecv(sz_in[r], r)
+    for r in other_ranks:
+        reqs_sz_out[r].wait()
+        reqs_sz_in[r].wait() 
+
+    # Send/receive `idx` and `loads` to/from all other ranks
+    idx_in = {r: torch.zeros(sz_in[r].item(), dtype=torch.int32) for r in other_ranks}
+    reqs_idx_out = {}
+    reqs_idx_in = {}
+    loads_in = {r: torch.zeros(sz_in[r].item(), 2, dtype=torch.float64) for r in other_ranks}
+    reqs_loads_out = {}
+    reqs_loads_in = {}
+    for r in other_ranks:
+        reqs_idx_out[r] = dist.isend(idx, r)
+        reqs_idx_in[r] = dist.irecv(idx_in[r], r)
+        reqs_loads_out[r] = dist.isend(loads, r)
+        reqs_loads_in[r] = dist.irecv(loads_in[r], r)
+    for r in other_ranks:
+        reqs_idx_out[r].wait()
+        reqs_idx_in[r].wait()
+        reqs_loads_out[r].wait()
+        reqs_loads_in[r].wait()
+
+    # Update model
+    for r in other_ranks:
+        model.set_loads(loads_in[r], idx_in[r])
+
+
+def broadcast_model(model: LowRankCovariance, rank: int, src: int):
+    if rank == src:
+        loads = model.get_loads()
+    else:
+        loads = torch.zeros_like(model.get_loads())
+    dist.broadcast(loads, src)
+    model.set_loads(loads)
+
+
+def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
+
+    num_strata = 2 * world_size + 1
     seed = seeds[rank]
     gen = torch.Generator().manual_seed(seed)
-    path = os.path.join(dir_data, 'data-0.pt')
-    grid_size = torch.load(path).shape[0]
-    num_workers = world_size - 1
 
-    if rank == 0:
+    dataset = DistributedStratifiedCovarianceDataset(dir, rank, world_size)
+    sampler = DistributedStratifiedDatasetSampler(dataset, gen)
+    dataloader = StratifiedDataLoader(dataset, sampler, batch_size=3)
 
-        # Generate and block training points, then send to workers
-        print(f"Rank {rank}: Allocating training points...")
-        points = gen_train_points(grid_size, delta)
-        points = block_train_points(points, grid_size, num_workers, gen)  # NOTE: points may be prohibitively large for one machine (stream?)
-        num_points = len(points)
-        strata = gen_strata(num_workers)
-        for r in range(1, world_size):
-            blocks = [s[r - 1] for s in strata]
-            mask = torch.zeros(len(points), dtype=torch.bool)
-            for b in blocks: 
-                temp = points[:,2:4] == torch.tensor(b)
-                temp = torch.logical_and(temp[:,0], temp[:,1])
-                mask = torch.logical_or(mask, temp)
-            worker_points = points[mask]
-            dist.send(torch.tensor(worker_points.shape, dtype=torch.int32), r)
-            dist.send(worker_points, r)
+    model = LowRankCovariance(num_vars, num_facs, gen)
+    broadcast_model(model, rank, 0)
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
-        # Initialize L via SVD(?)
-        # TODO: Better initialization? SVD on data matrix?
-        # NOTE: Only the workers needs gradients. Should only have to pass data between processes.
-        print(f"Rank {rank}: Initializing loadings...")
-        l = torch.randn(
-            grid_size, num_facs, 
-            generator=gen, 
-            dtype=torch.float64
-        )
+    print(f"Pre: rank = {rank} | loads = \n{model.get_loads(torch.arange(5))}")
 
-    else: 
-
-        # Receive training points from main process
-        print(f"Rank {rank}: Receiving training points...")
-        shape = torch.zeros(2, dtype=torch.int32)
-        dist.recv(shape, 0)
-        points = torch.zeros(shape.tolist(), dtype=torch.int32)
-        dist.recv(tensor=points, src=0)
-
-        # Compute covariance of training points
-        # NOTE: c_{ij} = \frac{1}{N-1} [T_1 - \frac{T_2 T_3}{N}]
-        #   where T_1 = sum(x_i * x_j)
-        #         T_2 = sum(x_i)
-        #         T_3 = sum(x_j)
-        print(f"Rank {rank}: Computing covariances...")
-        num_points = len(points)
-        t1 = torch.zeros(num_points, dtype=torch.float64)
-        t2 = torch.zeros(num_points, dtype=torch.float64)
-        t3 = torch.zeros(num_points, dtype=torch.float64)
-        n = 0
-        data = read_tensors(dir_data, 'data')
-        for batch in data: 
-            n += batch.shape[1]
-            for i in range(num_points): 
-                row, col = points[i,0:2]
-                t1[i] += torch.sum(batch[row,:] * batch[col,:])
-                t2[i] += torch.sum(batch[row,:])
-                t3[i] += torch.sum(batch[col,:])
-        cov = (t1 - t2 * t3 / n) / (n - 1)
-
-        # Initialize L as empty matrix
-        l = torch.zeros(
-            grid_size, num_facs, 
-            dtype=torch.float64
-        )
-
-    # Broadcast L
-    dist.broadcast(tensor=l, src=0)
-
-    # Optimize
-    print(f"Rank {rank}: Optimizing...")
-    epoch = 0
-    done = False
-    while not done:  # > epoch
-
-        # Set stratum sequence and broadcast to blocks
+    for epoch in range(max_epochs):  # > epoch
+        
+        # Broadcast stratum sequence from rank 0
         if rank == 0:
-            rand = random.Random(seed)
-            rand.shuffle(strata)
+            strat_seq = torch.randperm(num_strata, dtype=torch.int32)
         else:
-            strata_per_epoch = 2 * num_workers + 1
-            strata = [None] * strata_per_epoch
-        dist.broadcast_object_list(strata, src=0)
+            strat_seq = torch.zeros(num_strata, dtype=torch.int32)
+        dist.broadcast(strat_seq, 0)
 
-        for stratum in strata:  # > subepoch
+        for s in strat_seq:  # > subepoch
 
-            if rank != 0:
+            dataloader.set_stratum(s.item())
 
-                # Identify points and covariances associated with block
-                block = stratum[rank - 1]
-                mask = torch.logical_and(
-                        points[:,2] == block[0], 
-                        points[:,3] == block[1]
-                )
-                points_block = points[mask, 0:2]
-                cov_block = cov[mask]
+            for points, cov in dataloader:
 
-                # Perform SGD on block
-                l.requires_grad_(True)
-                optimizer = torch.optim.SGD([l], lr)
-                seq = torch.randperm(len(points_block), generator=gen)
-                for s in seq: 
+                # Forward pass
+                preds = model(points[:,0], points[:,1])
+                loss = mse_loss(preds, cov)
 
-                    # Compute local loss
-                    point = points_block[s,:]
-                    pred = torch.matmul(l[point[0],:], l[point[1],:])
-                    loss = mse_loss(pred, cov_block[s])
+                # Backward pass
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
 
-                    # Backward pass and step
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                # Sync model
+                dist.barrier()
+                print(f"rank = {rank} | here1")
+                sync_model(rank, world_size, model, points)
+                print(f"rank = {rank} | here2")
+                dist.barrier()
 
-                if block[0] == block[1]:
-                    
-                    # Get updated L block
-                    idx0 = torch.unique(points_block[:,0])
-                    idx1 = torch.unique(points_block[:,1])
-                    idx = torch.unique(torch.cat((idx0, idx1)))
-                    lb = l[idx,:].data
+            # (1) TODO: Sync model after each step
+            #           - This hangs because ranks have different number of points
+            # (2) TODO: Project
+            # (3) TODO: Evaluate loss after each epoch
 
-                    # Send L block to main process
-                    sz = torch.tensor([len(idx)], dtype=torch.int32)
-                    req_sz = dist.isend(sz, 0)
-                    req_idx = dist.isend(idx, 0)
-                    req_lb = dist.isend(lb, 0)
-                    req_sz.wait()
-                    req_idx.wait()
-                    req_lb.wait()
-                    
-                else:
-
-                    # Get updated L blocks
-                    idx0 = torch.unique(points_block[:,0])
-                    idx1 = torch.unique(points_block[:,1])
-                    lb0 = l[idx0,:].data
-                    lb1 = l[idx1,:].data
-
-                    # Send L blocks to main process
-                    sz0 = torch.tensor([len(idx0)], dtype=torch.int32)
-                    sz1 = torch.tensor([len(idx1)], dtype=torch.int32)
-                    req_sz0 = dist.isend(sz0, 0)
-                    req_sz1 = dist.isend(sz1, 0)
-                    req_idx0 = dist.isend(idx0, 0)
-                    req_idx1 = dist.isend(idx1, 0)
-                    req_lb0 = dist.isend(lb0, 0)
-                    req_lb1 = dist.isend(lb1, 0)
-                    req_sz0.wait()
-                    req_sz1.wait()
-                    req_idx0.wait()
-                    req_idx1.wait()
-                    req_lb0.wait()
-                    req_lb1.wait()
-
-            else: 
-
-                # Receive updated L blocks from workers
-                num_l_blocks = len(set(b for block in stratum for b in block))
-                idx = [None] * num_l_blocks
-                lb = [None] * num_l_blocks
-                reqs_idx = [None] * num_l_blocks
-                reqs_lb = [None] * num_l_blocks
-                for r in range(1, world_size):
-                    block = stratum[r - 1]
-
-                    if block[0] == block[1]:
-                        i = r - 1
-
-                        sz = torch.zeros(1, dtype=torch.int32)
-                        req_sz = dist.irecv(sz, src=r)
-                        req_sz.wait()
-
-                        idx[i] = torch.zeros(sz.item(), dtype=torch.int32)
-                        reqs_idx[i] = dist.irecv(idx[i], src=r)                        
-
-                        lb[i] = torch.zeros(sz.item(), num_facs, dtype=torch.float64)
-                        reqs_lb[i] = dist.irecv(lb[i], src=r)     
-
-                    else: 
-                        i = 2*(r - 1)
-                        
-                        sz0 = torch.zeros(1, dtype=torch.int32)
-                        sz1 = torch.zeros(1, dtype=torch.int32)
-                        req_sz0 = dist.irecv(sz0, src=r)
-                        req_sz1 = dist.irecv(sz1, src=r)
-                        req_sz0.wait()
-                        req_sz1.wait()
-                        
-                        idx[i] = torch.zeros(sz0.item(), dtype=torch.int32)
-                        idx[i+1] = torch.zeros(sz1.item(), dtype=torch.int32)
-                        reqs_idx[i] = dist.irecv(idx[i], src=r)
-                        reqs_idx[i+1] = dist.irecv(idx[i+1], src=r)
-                        
-                        lb[i] = torch.zeros(sz0.item(), num_facs, dtype=torch.float64)
-                        lb[i+1] = torch.zeros(sz1.item(), num_facs, dtype=torch.float64)
-                        reqs_lb[i] = dist.irecv(lb[i], src=r) 
-                        reqs_lb[i+1] = dist.irecv(lb[i+1], src=r) 
-                
-                # Wait for each request to complete
-                for r_idx, r_lb in zip(reqs_idx, reqs_lb):
-                    r_idx.wait()
-                    r_lb.wait()
-
-                # Update L with L blocks
-                for idx_, lb_ in zip(idx, lb):
-                    l[idx_, :] = lb_
-                
-            # Broadcast L to all workers
-            dist.barrier()
-            dist.broadcast(l, src=0)
-
-
-        # Check Convergence
-        if rank != 0:
-            l0 = l[points[:,0], :].data
-            l1 = l[points[:,1], :].data
-            pred = torch.sum(l0 * l1, dim=1)
-            loss = mse_loss(pred, cov)
-            dist.send(loss, 0)
-        else:
-            losses = torch.zeros(num_workers, dtype=torch.float64)
-            for r in range(1, world_size):
-                loss = torch.zeros(1, dtype=torch.float64)
-                dist.recv(loss, r)
-                losses[r - 1] = loss.item()
-            loss = torch.sum(losses) / num_points
-            print(f"Epoch {epoch} loss = {loss}")
-
-
-        # Determine whether to stop
-        epoch += 1
-        if epoch == max_epochs:
-            done = True
+        if rank == 0:
+            print(f"epoch = {epoch} | loss = loss")
 
 
     dist.destroy_process_group()
+
 
 
 
@@ -381,16 +307,109 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Configure globals
-    # addr = '127.0.0.1'
-    # port = '29500'
-    dir_data = './data/ffa'
+    dir_data = './data/ffa-dist'
     delta = 0.1
     num_facs = 2
     lr = 0.01
-    max_epochs = 20
+    max_epochs = 50
     seed = 12345
     gen = torch.Generator().manual_seed(seed)
     seeds = gen_seeds(gen, args.world_size)
+
+
+    # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
+
+    # Get the number of variables
+    path = os.path.join(dir_data, 'data-0.pt')
+    num_vars = torch.load(path).shape[0]
+
+    # Generate strata and a dict that maps blocks to their rank and stratum number
+    strata = gen_strata(args.world_size)
+    blocks_map = {}
+    i = 0
+    while i < len(strata):
+        stratum = strata[i]
+        rank = 0
+        for block in stratum:
+            blocks_map[block] = {'rank': rank, 'stratum': i}
+            rank += 1
+        i += 1
+
+    # Segment variables
+    seg_cnts = fair_allocate(num_vars, 2*args.world_size)
+    idx = 0
+    segs = torch.zeros(num_vars, dtype=torch.int32)
+    for seg, cnt in enumerate(seg_cnts):
+        segs[idx:(idx+cnt)] = torch.ones(cnt) * seg
+        idx += cnt
+    segs = segs[torch.randperm(num_vars, generator=gen)]
+
+    # For worker i (i = 0, ..., world_size - 1):
+    #   - Create points-{i}.pt file of points
+    #   - Create stratum-{i}.pt file of strata
+    points_loader = gen_points(num_vars, delta, 50)
+    for points_batch in points_loader:
+        sz = len(points_batch)
+
+        seg0_batch = segs[points_batch[:,0]]
+        seg1_batch = segs[points_batch[:,1]]
+
+        rank_batch = torch.zeros(sz, dtype=torch.int32)
+        stratum_batch = torch.zeros(sz, dtype=torch.int32)
+
+        for i in range(sz):
+
+            block = tuple(sorted(
+                [seg0_batch[i].item(), seg1_batch[i].item()], 
+                reverse=True
+            ))
+            rank_batch[i] = blocks_map[block]['rank']
+            stratum_batch[i] = blocks_map[block]['stratum']
+        
+        for r in range(args.world_size):
+
+            mask = rank_batch == r
+            points_rank = points_batch[mask]
+            stratum_rank = stratum_batch[mask]
+
+            path_points = os.path.join(dir_data, f'points-{r}.pt')
+            path_stratum = os.path.join(dir_data, f'stratum-{r}.pt')
+
+            if os.path.exists(path_points):
+                old_points_rank = torch.load(path_points)
+                old_stratum_rank = torch.load(path_stratum)
+                points_rank = torch.cat((old_points_rank, points_rank))
+                stratum_rank = torch.cat((old_stratum_rank, stratum_rank))
+
+            torch.save(points_rank, path_points)
+            torch.save(stratum_rank, path_stratum)
+
+
+
+    # ---------- COVARIANCE PREPARATION ---------- #
+
+    # Compute covariance for each rank's points
+    # TODO: Parallelize
+
+    for r in range(args.world_size):
+        path_points = os.path.join(dir_data, f'points-{r}.pt')
+        points = torch.load(path_points)
+        num_points = len(points)
+        t1 = torch.zeros(num_points, dtype=torch.float64)
+        t2 = torch.zeros(num_points, dtype=torch.float64)
+        t3 = torch.zeros(num_points, dtype=torch.float64)
+        n = 0
+        dataloader = read_tensors(dir_data, 'data')
+        for batch in dataloader: 
+            n += batch.shape[1]
+            for i in range(num_points):
+                row, col = points[i, :]
+                t1[i] += torch.sum(batch[row,:] * batch[col,:])
+                t2[i] += torch.sum(batch[row,:])
+                t3[i] += torch.sum(batch[col,:])
+            cov = (t1 - t2 * t3 / n) / (n - 1)
+            path_cov = os.path.join(dir_data, f'cov-{r}.pt')
+            torch.save(cov, path_cov)
 
 
     # ---------- DISTRIBUTED RUN ---------- #
@@ -402,7 +421,7 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, 
-                dir_data, delta, num_facs, lr, max_epochs, seeds,
+                dir_data, num_vars, num_facs, lr, max_epochs, seeds,
                 run, args.backend
             )
         )

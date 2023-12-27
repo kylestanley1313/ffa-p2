@@ -180,7 +180,7 @@ class DistributedCovarianceDataset(Dataset):
         return self.points[index], self.cov[index]
     
 
-class DistributedDatsetSampler(Sampler):
+class DistributedDatasetSampler(Sampler):
 
     def __init__(self, dataset, gen):
         self.dataset = dataset
@@ -237,7 +237,7 @@ def run(
     gen = torch.Generator().manual_seed(seed)
 
     dataset = DistributedCovarianceDataset(dir, rank, world_size)
-    sampler = DistributedDatsetSampler(dataset, gen)
+    sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=3, sampler=sampler)
 
     model = LowRankCovariance(num_vars, num_facs, gen)

@@ -3,6 +3,7 @@ import math
 import numpy as np
 import os
 import random
+import shutil
 import torch
 import torch.nn as nn
 import torch.distributed as dist
@@ -38,21 +39,30 @@ class DistributedStratifiedCovarianceDataset(Dataset):
 
     def __init__(self, dir: str, rank: int, world_size: int):
 
-        # Read in this rank's data
-        points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
-        strat = torch.load(os.path.join(dir, f'stratum-{rank}.pt'))
-        cov = torch.load(os.path.join(dir, f'cov-{rank}.pt'))
+        # Read in this rank's data and all ranks' stratum counts
+        num_strata = 2 * world_size + 1
+        strat_counts = torch.zeros(world_size, num_strata, dtype=torch.int32)
+        for r in range(world_size):
+            strat_ = torch.load(os.path.join(dir, f'stratum-{r}.pt'))
+            strat_counts[r, :] = torch.bincount(strat_)
+
+            if r == rank:
+                strat = strat_
+                points = torch.load(os.path.join(dir, f'points-{r}.pt'))
+                cov = torch.load(os.path.join(dir, f'cov-{r}.pt'))
 
         # Create dictionaries that map stratum to points/cov
         self.points = None
         self.cov = None
+        self.num_iters = None
         self.strat_points = {}
         self.strat_cov = {}
-        num_strata = 2 * world_size + 1
+        self.strat_num_iters = {}
         for s in range(num_strata):
             mask = strat == s
             self.strat_points[s] = points[mask]
             self.strat_cov[s] = cov[mask]
+            self.strat_num_iters[s] = strat_counts[:,s].max().item()
 
     def __len__(self):
         return len(self.cov)
@@ -63,6 +73,10 @@ class DistributedStratifiedCovarianceDataset(Dataset):
     def set_stratum(self, stratum):
         self.points = self.strat_points[stratum]
         self.cov = self.strat_cov[stratum]
+        self.num_iters = self.strat_num_iters[stratum]
+
+    def get_num_iters(self):
+        return self.num_iters
     
 
 class DistributedStratifiedDatasetSampler(Sampler):
@@ -77,7 +91,9 @@ class DistributedStratifiedDatasetSampler(Sampler):
 
     def __iter__(self):
         idx = torch.randperm(len(self.dataset), generator=self.gen)
-        return iter(idx.tolist())
+        pad_size = self.dataset.get_num_iters() - len(idx)
+        idx_pad = torch.randperm(len(idx), generator=self.gen)[:pad_size]
+        return iter(idx.tolist() + idx_pad.tolist())
     
 
 # NOTE: Should this inherit from DataLoader and implement a set_stratum method?
@@ -252,8 +268,6 @@ def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
     broadcast_model(model, rank, 0)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
-    print(f"Pre: rank = {rank} | loads = \n{model.get_loads(torch.arange(5))}")
-
     for epoch in range(max_epochs):  # > epoch
         
         # Broadcast stratum sequence from rank 0
@@ -280,9 +294,7 @@ def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
 
                 # Sync model
                 dist.barrier()
-                print(f"rank = {rank} | here1")
                 sync_model(rank, world_size, model, points)
-                print(f"rank = {rank} | here2")
                 dist.barrier()
 
             # (1) TODO: Sync model after each step
@@ -307,7 +319,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Configure globals
-    dir_data = './data/ffa-dist'
+    dir_data = './data/ffa-dist/data'
+    dir_cov = './data/ffa-dist/cov'
     delta = 0.1
     num_facs = 2
     lr = 0.01
@@ -315,6 +328,11 @@ if __name__ == '__main__':
     seed = 12345
     gen = torch.Generator().manual_seed(seed)
     seeds = gen_seeds(gen, args.world_size)
+
+    # Delete files from covariance directory
+    if os.path.exists(dir_cov):
+        shutil.rmtree(dir_cov)
+    os.makedirs(dir_cov)
 
 
     # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
@@ -372,8 +390,8 @@ if __name__ == '__main__':
             points_rank = points_batch[mask]
             stratum_rank = stratum_batch[mask]
 
-            path_points = os.path.join(dir_data, f'points-{r}.pt')
-            path_stratum = os.path.join(dir_data, f'stratum-{r}.pt')
+            path_points = os.path.join(dir_cov, f'points-{r}.pt')
+            path_stratum = os.path.join(dir_cov, f'stratum-{r}.pt')
 
             if os.path.exists(path_points):
                 old_points_rank = torch.load(path_points)
@@ -392,7 +410,7 @@ if __name__ == '__main__':
     # TODO: Parallelize
 
     for r in range(args.world_size):
-        path_points = os.path.join(dir_data, f'points-{r}.pt')
+        path_points = os.path.join(dir_cov, f'points-{r}.pt')
         points = torch.load(path_points)
         num_points = len(points)
         t1 = torch.zeros(num_points, dtype=torch.float64)
@@ -408,7 +426,7 @@ if __name__ == '__main__':
                 t2[i] += torch.sum(batch[row,:])
                 t3[i] += torch.sum(batch[col,:])
             cov = (t1 - t2 * t3 / n) / (n - 1)
-            path_cov = os.path.join(dir_data, f'cov-{r}.pt')
+            path_cov = os.path.join(dir_cov, f'cov-{r}.pt')
             torch.save(cov, path_cov)
 
 
@@ -421,7 +439,7 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, 
-                dir_data, num_vars, num_facs, lr, max_epochs, seeds,
+                dir_cov, num_vars, num_facs, lr, max_epochs, seeds,
                 run, args.backend
             )
         )

@@ -25,6 +25,7 @@ import os
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
+import shutil
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -34,54 +35,17 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
-from utils import gen_seeds, gen_points, read_tensors
+from utils import (
+    create_second_difference_matrix, 
+    gen_points, 
+    gen_seeds, 
+    read_tensors,
+    refresh_directory
+)
 
 
 
 # -------------------- UTILITIES -------------------- #
-
-def create_second_difference_matrix(n):
-
-    num_idx = 3 * n - 2
-    idx = torch.zeros(2, num_idx, dtype=torch.int32)
-    vals = torch.zeros(num_idx, dtype=torch.float64)
-    cnt = 0
-    for i in range(n):  # loop thru rows
-        
-        # Add diagonal
-        idx[:, cnt] = torch.tensor([i, i])
-        vals[cnt] = 2
-        cnt += 1
-        
-        if i == 0:
-            
-            # Add right
-            idx[:, cnt] = torch.tensor([i, i + 1])
-            vals[cnt] = -1
-            cnt += 1
-
-        elif i == n - 1:
-
-            # Add left
-            idx[:, cnt] = torch.tensor([i, i - 1])
-            vals[cnt] = -1
-            cnt += 1
-
-        else: 
-
-            # Add right
-            idx[:, cnt] = torch.tensor([i, i + 1])
-            vals[cnt] = -1
-            cnt += 1
-
-            # Add left
-            idx[:, cnt] = torch.tensor([i, i - 1])
-            vals[cnt] = -1
-            cnt += 1
-
-    diff_mat = torch.sparse_coo_tensor(indices=idx, values=vals, size=[n, n])
-    return diff_mat
-
 
 def roughness_penalty(loads: torch.Tensor, diff_mat: torch.Tensor):
     return torch.trace(loads.t() @ diff_mat @ loads)
@@ -108,7 +72,8 @@ def objective(
 def init_process(
         rank, 
         world_size, 
-        dir_data,
+        dir_cov,
+        dir_model,
         num_vars, 
         num_facs, 
         alpha,
@@ -126,7 +91,7 @@ def init_process(
         rank=rank, world_size=world_size
     )
     fcn(
-        rank, world_size, dir_data,
+        rank, world_size, dir_cov, dir_model,
         num_vars, num_facs, alpha, lr, max_epochs, seeds
     )
 
@@ -223,7 +188,8 @@ class BasicDataLoader(object):
 def run(
         rank: int, 
         world_size: int, 
-        dir: str,
+        dir_cov: str,
+        dir_model: str,
         num_vars: int, 
         num_facs: int, 
         alpha: float,
@@ -236,7 +202,7 @@ def run(
     print(f"rank = {rank} | seed = {seed}")
     gen = torch.Generator().manual_seed(seed)
 
-    dataset = DistributedCovarianceDataset(dir, rank, world_size)
+    dataset = DistributedCovarianceDataset(dir_cov, rank, world_size)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=3, sampler=sampler)
 
@@ -273,11 +239,12 @@ def run(
 
     # Save model
     if rank == 0:
-        path = os.path.join(dir, 'cov-model.pth')
+        path = os.path.join(dir_model, 'cov-model.pth')
         state_dict = model.state_dict()
         state_dict['loads.weight'] = state_dict.pop('module.loads.weight')  # Replace DDP key
         torch.save(state_dict, path)
 
+    dist.destroy_process_group()
 
 
 if __name__ == '__main__':
@@ -288,7 +255,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Configure globals
-    dir_data = './data/ffa'
+    dir_data = './data/ffa-ddp/data'
+    dir_cov = './data/ffa-ddp/cov'
+    dir_model = './data/ffa-ddp/model'
     num_vars = 30
     num_facs = 2
     alpha = 0.1
@@ -301,6 +270,10 @@ if __name__ == '__main__':
     seed = 12345
     gen = torch.Generator().manual_seed(seed)
     seeds = gen_seeds(gen, args.world_size)
+
+    # Delete files from covariance and model directories
+    refresh_directory(dir_cov)
+    refresh_directory(dir_model)
 
     
     # ---------- COVARIANCE PREPARATION ---------- $
@@ -326,8 +299,8 @@ if __name__ == '__main__':
                 t2[i] += torch.sum(data_batch[row,:])
                 t3[i] += torch.sum(data_batch[col,:])
         cov = (t1 - t2 * t3 / n) / (n - 1)
-        path_points = os.path.join(dir_data, f'points-{iter}.pt')
-        path_cov = os.path.join(dir_data, f'cov-{iter}.pt')
+        path_points = os.path.join(dir_cov, f'points-{iter}.pt')
+        path_cov = os.path.join(dir_cov, f'cov-{iter}.pt')
         torch.save(points_batch, path_points)
         torch.save(cov, path_cov)
         iter += 1
@@ -340,7 +313,7 @@ if __name__ == '__main__':
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, dir_data,
+                rank, args.world_size, dir_cov, dir_model,
                 num_vars, num_facs, alpha, lr, max_epochs, seeds,
                 run, args.backend
             )
@@ -353,7 +326,7 @@ if __name__ == '__main__':
 
 
     # ---------- EVALUATION ---------- #
-    path = os.path.join(dir_data, 'cov-model.pth')
+    path = os.path.join(dir_model, 'cov-model.pth')
     final_model = LowRankCovariance(num_vars, num_facs, gen)
     final_model.load_state_dict(torch.load(path))
     df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])

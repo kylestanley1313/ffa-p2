@@ -1,5 +1,6 @@
 import os
 import math
+import shutil
 import torch
 from typing import Generator
 
@@ -31,6 +32,55 @@ def read_tensors(dir, prefix):
     for f in files:
         if f.startswith(prefix) and f.endswith('.pt'):
             yield torch.load(os.path.join(dir, f))
+
+
+def refresh_directory(dir):
+    if os.path.exists(dir):
+        shutil.rmtree(dir)
+    os.makedirs(dir)
+
+
+def create_second_difference_matrix(n):
+
+    num_idx = 3 * n - 2
+    idx = torch.zeros(2, num_idx, dtype=torch.int32)
+    vals = torch.zeros(num_idx, dtype=torch.float64)
+    cnt = 0
+    for i in range(n):  # loop thru rows
+        
+        # Add diagonal
+        idx[:, cnt] = torch.tensor([i, i])
+        vals[cnt] = 2
+        cnt += 1
+        
+        if i == 0:
+            
+            # Add right
+            idx[:, cnt] = torch.tensor([i, i + 1])
+            vals[cnt] = -1
+            cnt += 1
+
+        elif i == n - 1:
+
+            # Add left
+            idx[:, cnt] = torch.tensor([i, i - 1])
+            vals[cnt] = -1
+            cnt += 1
+
+        else: 
+
+            # Add right
+            idx[:, cnt] = torch.tensor([i, i + 1])
+            vals[cnt] = -1
+            cnt += 1
+
+            # Add left
+            idx[:, cnt] = torch.tensor([i, i - 1])
+            vals[cnt] = -1
+            cnt += 1
+
+    diff_mat = torch.sparse_coo_tensor(indices=idx, values=vals, size=[n, n])
+    return diff_mat
 
 
 

@@ -1,8 +1,11 @@
 import argparse
 import math
+import matplotlib.pyplot as plt
 import numpy as np
 import os
+import pandas as pd
 import random
+import seaborn as sns
 import shutil
 import torch
 import torch.nn as nn
@@ -12,7 +15,13 @@ from torch.nn.functional import mse_loss
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
-from utils import gen_points, gen_seeds, read_tensors
+from utils import (
+    create_second_difference_matrix, 
+    gen_points, 
+    gen_seeds, 
+    read_tensors,
+    refresh_directory
+)
 
 
 
@@ -28,6 +37,13 @@ from utils import gen_points, gen_seeds, read_tensors
 #   $ ps -ef | grep ffa-p2-priv
 #   $ kill -9 <pid>
 # TODO: Find more permanent solution to this.
+
+
+# -------------------- UTILITIES -------------------- #
+
+def second_difference_norm(x, diff_mat):
+    return torch.sqrt(torch.trace(x.t() @ diff_mat @ x) / x.shape[0])
+
 
 
 # -------------------- MODULES -------------------- #
@@ -75,6 +91,11 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         self.cov = self.strat_cov[stratum]
         self.num_iters = self.strat_num_iters[stratum]
 
+    def set_all_strata(self):
+        self.points = torch.cat(list(self.strat_points.values()))
+        self.cov = torch.cat(list(self.strat_cov.values()))
+        self.num_iters = None  # do not require inter-rank synchronization 
+
     def get_num_iters(self):
         return self.num_iters
     
@@ -91,9 +112,13 @@ class DistributedStratifiedDatasetSampler(Sampler):
 
     def __iter__(self):
         idx = torch.randperm(len(self.dataset), generator=self.gen)
-        pad_size = self.dataset.get_num_iters() - len(idx)
-        idx_pad = torch.randperm(len(idx), generator=self.gen)[:pad_size]
-        return iter(idx.tolist() + idx_pad.tolist())
+        num_iters = self.dataset.get_num_iters()
+        if num_iters is not None:
+            pad_size = self.dataset.get_num_iters() - len(idx)
+            idx_pad = torch.randperm(len(idx), generator=self.gen)[:pad_size]
+            return iter(idx.tolist() + idx_pad.tolist())
+        else:
+            return iter(idx.tolist())
     
 
 # NOTE: Should this inherit from DataLoader and implement a set_stratum method?
@@ -124,8 +149,14 @@ class StratifiedDataLoader(object):
         if cnt > 0:
             yield self.dataset[curr_batch[:cnt]]
 
+    def __len__(self):
+        return len(self.dataset)
+
     def set_stratum(self, stratum):
         self.dataset.set_stratum(stratum)
+
+    def set_all_strata(self):
+        self.dataset.set_all_strata()
 
 
 # TODO: Move sync_model functionality into this class
@@ -153,13 +184,16 @@ class LowRankCovariance(nn.Module):
             self.loads.weight.data = loads
         else:
             self.loads.weight.data[idx] = loads
+
+    def get_num_facs(self):
+        return self.num_facs
     
 
 
 
 # -------------------- DISTRIBUTION -------------------- #
 
-def init_process(rank, world_size, dir_data, num_vars, num_facs, lr, max_epochs, seeds, fcn, backend):
+def init_process(rank, world_size, dir_data, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds, fcn, backend):
     path = '/tmp/sharedfile'
     if os.path.exists(path):
         os.remove(path)
@@ -167,7 +201,7 @@ def init_process(rank, world_size, dir_data, num_vars, num_facs, lr, max_epochs,
         backend, init_method=f'file://{path}',
         rank=rank, world_size=world_size
     )
-    fcn(rank, world_size, dir_data, num_vars, num_facs, lr, max_epochs, seeds)
+    fcn(rank, world_size, dir_data, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds)
 
 
 # -------------------- RUN -------------------- #
@@ -223,10 +257,16 @@ def sync_model(
         reqs_sz_in[r].wait() 
 
     # Send/receive `idx` and `loads` to/from all other ranks
-    idx_in = {r: torch.zeros(sz_in[r].item(), dtype=torch.int32) for r in other_ranks}
+    idx_in = {
+        r: torch.zeros(sz_in[r].item(), dtype=torch.int32) 
+        for r in other_ranks
+    }
     reqs_idx_out = {}
     reqs_idx_in = {}
-    loads_in = {r: torch.zeros(sz_in[r].item(), 2, dtype=torch.float64) for r in other_ranks}
+    loads_in = {
+        r: torch.zeros(sz_in[r].item(), model.get_num_facs(), dtype=torch.float64) 
+        for r in other_ranks
+    }
     reqs_loads_out = {}
     reqs_loads_in = {}
     for r in other_ranks:
@@ -254,13 +294,57 @@ def broadcast_model(model: LowRankCovariance, rank: int, src: int):
     model.set_loads(loads)
 
 
-def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
+def project_model(model: LowRankCovariance, alpha: float, diff_mat: torch.Tensor):
+    loads = model.get_loads()
+    sec_diff_norm = second_difference_norm(loads, diff_mat)
+    if sec_diff_norm > alpha:
+        loads_new = alpha * loads / sec_diff_norm
+    else: 
+        loads_new = loads
+    model.set_loads(loads_new)
+
+
+def compute_loss(rank, world_size, model, dataloader):
+
+    # Compute rank-wise loss
+    dataloader.set_all_strata()  # give dataloader access to all a worker's points
+    loss = 0
+    n = len(dataloader)
+    for points, cov in dataloader:
+        preds = model(points[:,0], points[:,1])
+        loss += mse_loss(preds, cov, reduction='sum')
+    
+    # Send loss data when rank > 0
+    if rank != 0:
+        dist.send(torch.tensor([n], dtype=torch.int32), 0)
+        dist.send(torch.tensor([loss], dtype=torch.float64), 0)
+    
+    # Receive loss data when rank == 0
+    if rank == 0:
+        
+        # Collect losses
+        n_list = [torch.zeros(1, dtype=torch.int32) for _ in range(world_size)]
+        loss_list = [torch.zeros(1, dtype=torch.float64) for _ in range(world_size)]
+        n_list[0] = torch.tensor([n], dtype=torch.int32)
+        loss_list[0] = torch.tensor([loss], dtype=torch.float64)
+        for r in range(1, world_size):
+            dist.recv(n_list[r], r)
+            dist.recv(loss_list[r], r)
+
+        # Aggregate losses
+        n = sum(n_list).item()
+        loss = sum(loss_list).item()
+        return loss / n
+
+
+def run(rank, world_size, dir_cov, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds):
 
     num_strata = 2 * world_size + 1
+    diff_mat = create_second_difference_matrix(num_vars)
     seed = seeds[rank]
     gen = torch.Generator().manual_seed(seed)
 
-    dataset = DistributedStratifiedCovarianceDataset(dir, rank, world_size)
+    dataset = DistributedStratifiedCovarianceDataset(dir_cov, rank, world_size)
     sampler = DistributedStratifiedDatasetSampler(dataset, gen)
     dataloader = StratifiedDataLoader(dataset, sampler, batch_size=3)
 
@@ -272,7 +356,7 @@ def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
         
         # Broadcast stratum sequence from rank 0
         if rank == 0:
-            strat_seq = torch.randperm(num_strata, dtype=torch.int32)
+            strat_seq = torch.randperm(num_strata, generator=gen, dtype=torch.int32)
         else:
             strat_seq = torch.zeros(num_strata, dtype=torch.int32)
         dist.broadcast(strat_seq, 0)
@@ -285,7 +369,7 @@ def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
 
                 # Forward pass
                 preds = model(points[:,0], points[:,1])
-                loss = mse_loss(preds, cov)
+                loss = mse_loss(preds, cov, reduction='sum')
 
                 # Backward pass
                 optimizer.zero_grad()
@@ -295,16 +379,21 @@ def run(rank, world_size, dir, num_vars, num_facs, lr, max_epochs, seeds):
                 # Sync model
                 dist.barrier()
                 sync_model(rank, world_size, model, points)
-                dist.barrier()
 
-            # (1) TODO: Sync model after each step
-            #           - This hangs because ranks have different number of points
-            # (2) TODO: Project
-            # (3) TODO: Evaluate loss after each epoch
+                # Project model
+                if alpha is not None:
+                    project_model(model, alpha, diff_mat)
 
+        # Evaluate loss
+        loss = compute_loss(rank, world_size, model, dataloader)
         if rank == 0:
-            print(f"epoch = {epoch} | loss = loss")
+            print(f"epoch = {epoch} | loss = {loss}")
 
+    # Save model
+    if rank == 0:
+        path = os.path.join(dir_model, 'cov-model.pth')
+        state_dict = model.state_dict()
+        torch.save(state_dict, path)
 
     dist.destroy_process_group()
 
@@ -321,18 +410,19 @@ if __name__ == '__main__':
     # Configure globals
     dir_data = './data/ffa-dist/data'
     dir_cov = './data/ffa-dist/cov'
+    dir_model = './data/ffa-dist/model'
     delta = 0.1
     num_facs = 2
+    alpha = 0.3
     lr = 0.01
-    max_epochs = 50
-    seed = 12345
+    max_epochs = 200
+    seed = 1234
     gen = torch.Generator().manual_seed(seed)
     seeds = gen_seeds(gen, args.world_size)
 
-    # Delete files from covariance directory
-    if os.path.exists(dir_cov):
-        shutil.rmtree(dir_cov)
-    os.makedirs(dir_cov)
+    # Delete files from covariance and model directories
+    refresh_directory(dir_cov)
+    refresh_directory(dir_model)
 
 
     # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
@@ -439,7 +529,7 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, 
-                dir_cov, num_vars, num_facs, lr, max_epochs, seeds,
+                dir_cov, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds,
                 run, args.backend
             )
         )
@@ -448,3 +538,12 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
+
+
+    # ---------- EVALUATION ---------- #
+    path = os.path.join(dir_model, 'cov-model.pth')
+    final_model = LowRankCovariance(num_vars, num_facs, gen)
+    final_model.load_state_dict(torch.load(path))
+    df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
+    sns.lineplot(data=df)
+    plt.show()

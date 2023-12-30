@@ -83,7 +83,6 @@ dependencies:
   - libcxx=14.0.6
   - libdeflate=1.17
   - libffi=3.4.4
-  - libgfortran=5.0.0
   - libgfortran5=13.2.0
   - libiconv=1.16
   - libidn2=2.3.4
@@ -141,8 +140,6 @@ dependencies:
   - pure_eval=0.2.2
   - pycparser=2.21
   - pygments=2.16.1
-  - pyobjc-core=10.0
-  - pyobjc-framework-cocoa=10.0
   - pyopenssl=23.2.0
   - pyparsing=3.1.1
   - pysocks=1.7.1

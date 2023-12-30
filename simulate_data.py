@@ -51,22 +51,35 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '-d', '--dir_data', 
+        '-d', '--dir_data',
         help="Directory in which simulated data will be stored."
+    )
+    parser.add_argument(
+        '-v', '--num_vars', type=int,
+        help="Number of variables in simulated data."
+    )
+    parser.add_argument(
+        '-nt', '--num_train', type=int,
+        help="Number of training samples to simulate."
+    )
+    parser.add_argument(
+        '-nv', '--num_val', type=int,
+        help="Number of validation samples to simulate."
+    )
+    parser.add_argument(
+        '-bs', '--batch_size', type=int,
+        help="Maximum number of samples per output file."
+    )
+    parser.add_argument(
+        '-s', '--seed', default=12345,
+        help="Integer used to seed generator."
     )
     args = parser.parse_args()
 
     # Configure globals
-    num_train = 100
-    num_val = 0
-    data_batch_size = 50
-    num_vars = 30
     load_fcns = [sine_loading, cosine_loading]
     num_facs = len(load_fcns)
-    
-    # Seeding
-    seed = 12345
-    gen = torch.Generator().manual_seed(seed)
+    gen = torch.Generator().manual_seed(args.seed)
 
     # ---------- DATA SIMULATION ---------- #
     print(f"Simulating new data...")
@@ -76,14 +89,14 @@ if __name__ == '__main__':
         shutil.rmtree(args.dir_data)
     os.makedirs(args.dir_data)
 
-    loadings = build_loadings(load_fcns, num_vars)
+    loadings = build_loadings(load_fcns, args.num_vars)
     err_sds = 0.2 * torch.ones(loadings.shape[0], dtype=torch.float64)
     data = simulate_ffm_data(
         loadings, 
         err_sds,
-        num_train=num_train,
-        num_val=num_val,
-        batch_size=data_batch_size,
+        num_train=args.num_train,
+        num_val=args.num_val,
+        batch_size=args.batch_size,
         gen=gen
     )
 

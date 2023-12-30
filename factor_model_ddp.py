@@ -180,7 +180,6 @@ def run(
     gen = torch.Generator().manual_seed(seed)
 
     dataset = DistributedCovarianceDataset(dir_cov, rank, world_size)
-    print(f"rank {rank} | len(dataset) = {len(dataset)}")
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=3, sampler=sampler)
 

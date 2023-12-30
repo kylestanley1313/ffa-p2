@@ -1,25 +1,3 @@
-"""Implements DSGD for CMF using the standard DistributedSampler/DDP framework.
-This framework contains features we do not want/need: 
-    - Gradient synchronization across processes (not needed when data stratified)
-    - Dropping or adding data to ensure each process has same number of forward
-      and backward calls. 
-
-Since this framework contains more communication (gradient synchronization) than
-we require in CMF, we can use it to get an upper limit on compute time. 
-
-Hopefully, we can steal ideas from DDP (like ring all-reduce) to speed up our
-computation. 
-
-Also, projection onto smoother loading space may be possible in this framework.
-
-NOTE: (DistributedSampler Data Dropping/Adding)
-    - DistributedSampler drops/adds data so that each process has the same
-      number of iterations. This ensures that DistributedDataParallel's
-      all-reduce step doesn't hang forever. 
-    - Relevant Issue: https://github.com/pytorch/pytorch/issues/22584
-    - Possible Solution: https://discuss.pytorch.org/t/distributedsampler/90205
-"""
-
 import argparse
 import os
 import matplotlib.pyplot as plt
@@ -199,10 +177,10 @@ def run(
     ) -> None:
     
     seed = seeds[rank]
-    print(f"rank = {rank} | seed = {seed}")
     gen = torch.Generator().manual_seed(seed)
 
     dataset = DistributedCovarianceDataset(dir_cov, rank, world_size)
+    print(f"rank {rank} | len(dataset) = {len(dataset)}")
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=3, sampler=sampler)
 
@@ -250,25 +228,24 @@ def run(
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-b', '--backend', default='gloo')
-    parser.add_argument('-ws', '--world_size', type=int)
+    parser.add_argument('--backend', default='gloo')
+    parser.add_argument('--world_size', type=int)
+    parser.add_argument('--dir', type=str)
+    parser.add_argument('--num_facs', type=int)
+    parser.add_argument('--alpha', type=float)
+    parser.add_argument('--delta', type=float)
+    parser.add_argument('--lr', type=float)
+    parser.add_argument('--max_epochs', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
 
-    # Configure globals
-    dir_data = './data/ffa-ddp/data'
-    dir_cov = './data/ffa-ddp/cov'
-    dir_model = './data/ffa-ddp/model'
-    num_vars = 30
-    num_facs = 2
-    alpha = 0.1
-    cov_batch_size_per_proc = int((num_vars ** 2) / 18)
-    delta = 0.1
-    lr = 0.01
-    max_epochs = 200
+    # Configure directories
+    dir_data = os.path.join('.', 'data', args.dir, 'data')
+    dir_cov = os.path.join('.', 'data', args.dir, 'cov')
+    dir_model = os.path.join('.', 'data', args.dir, 'model')
     
     # Seeding
-    seed = 12345
-    gen = torch.Generator().manual_seed(seed)
+    gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)
 
     # Delete files from covariance and model directories
@@ -280,9 +257,14 @@ if __name__ == '__main__':
 
     print(f"Computing covariance...")
 
+    # Get the number of variables
+    path = os.path.join(dir_data, 'data-0.pt')
+    num_vars = torch.load(path).shape[0]
+
     # Generate points then compute covariance
+    cov_batch_size_per_proc = int((num_vars ** 2) / 18)  # TODO: Why? Better choice?
     cov_batch_size = cov_batch_size_per_proc * args.world_size
-    points = gen_points(num_vars, delta, cov_batch_size)
+    points = gen_points(num_vars, args.delta, cov_batch_size)
     iter = 0
     for points_batch in points: 
         num_points = len(points_batch)
@@ -314,8 +296,8 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, dir_cov, dir_model,
-                num_vars, num_facs, alpha, lr, max_epochs, seeds,
-                run, args.backend
+                num_vars, args.num_facs, args.alpha, args.lr, args.max_epochs, 
+                seeds, run, args.backend
             )
         )
         p.start()
@@ -327,7 +309,7 @@ if __name__ == '__main__':
 
     # ---------- EVALUATION ---------- #
     path = os.path.join(dir_model, 'cov-model.pth')
-    final_model = LowRankCovariance(num_vars, num_facs, gen)
+    final_model = LowRankCovariance(num_vars, args.num_facs, gen)
     final_model.load_state_dict(torch.load(path))
     df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
     sns.lineplot(data=df)

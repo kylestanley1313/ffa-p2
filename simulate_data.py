@@ -51,27 +51,27 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        '-d', '--dir_data',
+        '--dir',
         help="Directory in which simulated data will be stored."
     )
     parser.add_argument(
-        '-v', '--num_vars', type=int,
+        '--num_vars', type=int,
         help="Number of variables in simulated data."
     )
     parser.add_argument(
-        '-nt', '--num_train', type=int,
+        '--num_train', type=int,
         help="Number of training samples to simulate."
     )
     parser.add_argument(
-        '-nv', '--num_val', type=int,
+        '--num_val', type=int,
         help="Number of validation samples to simulate."
     )
     parser.add_argument(
-        '-bs', '--batch_size', type=int,
+        '--batch_size', type=int,
         help="Maximum number of samples per output file."
     )
     parser.add_argument(
-        '-s', '--seed', default=12345,
+        '--seed', default=12345,
         help="Integer used to seed generator."
     )
     args = parser.parse_args()
@@ -85,9 +85,10 @@ if __name__ == '__main__':
     print(f"Simulating new data...")
 
     # Delete files from directory
-    if os.path.exists(args.dir_data):
-        shutil.rmtree(args.dir_data)
-    os.makedirs(args.dir_data)
+    data_dir = os.path.join('.', 'data', args.dir, 'data')
+    if os.path.exists(data_dir):
+        shutil.rmtree(data_dir)
+    os.makedirs(data_dir)
 
     loadings = build_loadings(load_fcns, args.num_vars)
     err_sds = 0.2 * torch.ones(loadings.shape[0], dtype=torch.float64)
@@ -100,6 +101,6 @@ if __name__ == '__main__':
         gen=gen
     )
 
-    write_generated_tensor(data, args.dir_data, 'data')
+    write_generated_tensor(data, data_dir, 'data')
 
     print("DONE!")

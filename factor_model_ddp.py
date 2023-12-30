@@ -313,6 +313,7 @@ if __name__ == '__main__':
     final_model.load_state_dict(torch.load(path))
     df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
     sns.lineplot(data=df)
-    plt.show()
+    path = os.path.join('.', 'data', args.dir, 'loads.png')
+    plt.savefig(path)
 
 

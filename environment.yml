@@ -1,4 +1,4 @@
-name: /Users/kylestanley/repos/ffa-p2-priv/.conda
+name: ffa-p2-priv
 channels:
   - pytorch
   - conda-forge
@@ -199,4 +199,3 @@ dependencies:
   - zipp=3.16.2
   - zlib=1.2.13
   - zstd=1.5.5
-prefix: /Users/kylestanley/repos/ffa-p2-priv/.conda

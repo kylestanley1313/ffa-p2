@@ -64,10 +64,12 @@ def init_process(
     path = '/tmp/sharedfile'
     if os.path.exists(path):
         os.remove(path)
+    print(f"rank = {rank} | before init_process_group")
     dist.init_process_group(
         backend, init_method=f'file://{path}',
         rank=rank, world_size=world_size
     )
+    print(f"rank = {rank} | after init_process_group")
     fcn(
         rank, world_size, dir_cov, dir_model,
         num_vars, num_facs, alpha, lr, max_epochs, seeds

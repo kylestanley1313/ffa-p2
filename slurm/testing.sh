@@ -25,6 +25,10 @@ CONDA_BASE=$(conda info --base)
 source $CONDA_BASE/etc/profile.d/conda.sh
 conda activate ffa-p2-priv
 
-echo "Running test script..."
-python testing.py --to_test=cuda
+echo "Simulating factor model..."
+python simulate_data.py --dir ffa --num_vars 30 --num_train 100 --num_val 0 --batch_size 50
+echo "DONE!"
+
+echo "Estimating factor model..."
+python factor_model_ddp.py --world_size 2 --dir ffa --num_facs 2 --alpha 0 --delta 0.1 --lr 0.05 --max_epochs 100
 echo "DONE!"

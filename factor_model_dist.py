@@ -24,19 +24,17 @@ from utils import (
 )
 
 
+# NOTE: (Projection Problems)
+#   - Current method doesn't make loadings "smoother" it just flattens them
+#     globally or shrinks them/ 
+#   - Ideas: 
+#       * Use Allen and Weylandt norm
+#       * Constrain unit loadings
+#       * Present two methods: one with smoothing and another wihtout
+#       * Smooth covariance a priori
+#       * Smooth loadings after
+#       * Use orthogonal projection operator
 
-# PLAN: 
-#   - Implement for 1-dim FFA
-#   - Implement for D-dim FFA
-#   - Can we wedge factor model into standard PyTorch framework? This first
-#     iteration makes use only of torch.distributed machinery. 
-
-
-# NOTE: If you must ctrl-c to terminate execution, you still need to kill
-# processes on the command line: 
-#   $ ps -ef | grep ffa-p2-priv
-#   $ kill -9 <pid>
-# TODO: Find more permanent solution to this.
 
 
 # -------------------- UTILITIES -------------------- #
@@ -403,21 +401,23 @@ def run(rank, world_size, dir_cov, dir_model, num_vars, num_facs, alpha, lr, max
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-b', '--backend', default='gloo')
-    parser.add_argument('-ws', '--world_size', type=int)
+    parser.add_argument('--backend', default='gloo')
+    parser.add_argument('--world_size', type=int)
+    parser.add_argument('--dir', type=str)
+    parser.add_argument('--num_facs', type=int)
+    parser.add_argument('--alpha', type=float)
+    parser.add_argument('--delta', type=float)
+    parser.add_argument('--lr', type=float)
+    parser.add_argument('--max_epochs', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
 
     # Configure globals
-    dir_data = './data/ffa-dist/data'
-    dir_cov = './data/ffa-dist/cov'
-    dir_model = './data/ffa-dist/model'
-    delta = 0.1
-    num_facs = 2
-    alpha = 0.3
-    lr = 0.01
-    max_epochs = 200
-    seed = 1234
-    gen = torch.Generator().manual_seed(seed)
+    dir_data = f'./data/{args.dir}/data'
+    dir_cov = f'./data/{args.dir}/cov'
+    dir_model = f'./data/{args.dir}/model'
+    alpha = None if args.alpha == 0 else args.alpha
+    gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)
 
     # Delete files from covariance and model directories
@@ -455,7 +455,7 @@ if __name__ == '__main__':
     # For worker i (i = 0, ..., world_size - 1):
     #   - Create points-{i}.pt file of points
     #   - Create stratum-{i}.pt file of strata
-    points_loader = gen_points(num_vars, delta, 50)
+    points_loader = gen_points(num_vars, args.delta, 50)
     for points_batch in points_loader:
         sz = len(points_batch)
 
@@ -529,7 +529,8 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, 
-                dir_cov, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds,
+                dir_cov, dir_model, num_vars, args.num_facs, alpha, 
+                args.lr, args.max_epochs, seeds,
                 run, args.backend
             )
         )
@@ -541,9 +542,11 @@ if __name__ == '__main__':
 
 
     # ---------- EVALUATION ---------- #
+
     path = os.path.join(dir_model, 'cov-model.pth')
-    final_model = LowRankCovariance(num_vars, num_facs, gen)
+    final_model = LowRankCovariance(num_vars, args.num_facs, gen)
     final_model.load_state_dict(torch.load(path))
     df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
     sns.lineplot(data=df)
-    plt.show()
+    path = os.path.join('.', 'data', args.dir, 'loads.png')
+    plt.savefig(path)

@@ -6,7 +6,7 @@
 #SBATCH -n 1
 #SBATCH --mem-per-cpu=5gb
 #SBATCH --time=00:10:00
-#SBATCH --output=testing_%j.log
+#SBATCH --output=slurm/ouptut/testing_%j.out
 
 # Get started
 echo " "

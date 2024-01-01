@@ -295,6 +295,7 @@ if __name__ == '__main__':
     processes = []
     mp.set_start_method('spawn')
     for rank in range(args.world_size):
+        print(f"rank = {rank} | before Process()")
         p = mp.Process(
             target=init_process, 
             args=(
@@ -303,7 +304,9 @@ if __name__ == '__main__':
                 seeds, run, args.backend
             )
         )
+        print(f"rank = {rank} | before start()")
         p.start()
+        print(f"rank = {rank} | before append()")
         processes.append(p)
 
     for p in processes:

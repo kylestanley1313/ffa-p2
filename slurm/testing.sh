@@ -4,7 +4,7 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
-#SBATCH -n 2
+#SBATCH -n 5
 #SBATCH --mem-per-cpu=5gb
 #SBATCH --time=00:10:00
 #SBATCH --output=slurm/output/testing_%j.out

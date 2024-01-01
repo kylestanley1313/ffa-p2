@@ -13,6 +13,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
+print('after external imports')
+
 from utils import (
     create_second_difference_matrix, 
     gen_points, 

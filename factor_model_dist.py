@@ -15,6 +15,8 @@ from torch.nn.functional import mse_loss
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
+print('after external imports')
+
 from utils import (
     create_second_difference_matrix, 
     gen_points, 

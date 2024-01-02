@@ -15,8 +15,6 @@ from torch.nn.functional import mse_loss
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
-print('after external imports')
-
 from utils import (
     create_second_difference_matrix, 
     gen_points, 
@@ -193,16 +191,25 @@ class LowRankCovariance(nn.Module):
 
 # -------------------- DISTRIBUTION -------------------- #
 
-def init_process(rank, world_size, dir_data, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds, fcn, backend):
-    path = '/tmp/sharedfile'
-    if os.path.exists(path):
-        os.remove(path)
-    print(f"rank = {rank} | before init_process_group")
+def init_process(
+        rank, 
+        world_size, 
+        shared_path,
+        dir_data, 
+        dir_model, 
+        num_vars, 
+        num_facs, 
+        alpha, 
+        lr, 
+        max_epochs, 
+        seeds, 
+        fcn, 
+        backend
+    ):
     dist.init_process_group(
-        backend, init_method=f'file://{path}',
+        backend, init_method=f'file://{shared_path}',
         rank=rank, world_size=world_size
     )
-    print(f"rank = {rank} | after init_process_group")
     fcn(rank, world_size, dir_data, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds)
 
 
@@ -526,13 +533,16 @@ if __name__ == '__main__':
 
     # ---------- DISTRIBUTED RUN ---------- #
 
+    shared_path = '/tmp/sharedfile'
+    if os.path.exists(shared_path):
+        os.remove(shared_path)
     processes = []
     mp.set_start_method('spawn')
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, 
+                rank, args.world_size, shared_path,
                 dir_cov, dir_model, num_vars, args.num_facs, alpha, 
                 args.lr, args.max_epochs, seeds,
                 run, args.backend

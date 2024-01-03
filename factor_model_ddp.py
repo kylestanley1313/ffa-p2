@@ -4,15 +4,18 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import shutil
+import sys
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
+from functools import partial
 from torch.nn.functional import mse_loss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
+from benchmarking import aggregate_benchmarks, size_dist_obj, time_dist_fcn
 from utils import (
     create_second_difference_matrix, 
     gen_points, 
@@ -21,6 +24,30 @@ from utils import (
     refresh_directory
 )
 
+# -------------------- GLOBALS -------------------- #
+
+OUT_DIR = os.path.join('.', 'out', 'ffa-ddp')
+DIR_DATA = os.path.join(OUT_DIR, 'data')
+DIR_COV = os.path.join(OUT_DIR, 'cov')
+DIR_MODEL = os.path.join(OUT_DIR, 'model')
+DIR_BENCH = os.path.join(OUT_DIR, 'bench')
+BENCHMARK = True
+
+
+# -------------------- BENCHMARKING -------------------- #
+
+time_process_epoch = partial(
+    time_dist_fcn, 
+    dir=DIR_BENCH, prefix='process_epoch', benchmark=BENCHMARK
+)
+time_compute_loss = partial(
+    time_dist_fcn, 
+    dir=DIR_BENCH, prefix='compute_loss', benchmark=BENCHMARK
+)
+size_dataset = partial(
+    size_dist_obj,
+    dir=DIR_BENCH, prefix='dataset', benchmark=BENCHMARK
+)
 
 
 # -------------------- UTILITIES -------------------- #
@@ -87,6 +114,7 @@ class LowRankCovariance(nn.Module):
         return (loads0 * loads1).sum(dim=1)  # NOTE: Has length len(idx0)
 
 
+@size_dataset
 class DistributedCovarianceDataset(Dataset):
 
     def __init__(self, dir: str, rank: int, world_size: int):
@@ -119,6 +147,12 @@ class DistributedCovarianceDataset(Dataset):
 
     def __getitem__(self, index):
         return self.points[index], self.cov[index]
+    
+    def storage(self):
+        """Returns size of dataset (in bytes)."""
+        points_sz = sys.getsizeof(self.points.untyped_storage())
+        cov_sz = sys.getsizeof(self.cov.untyped_storage())
+        return points_sz + cov_sz
     
 
 class DistributedDatasetSampler(Sampler):
@@ -159,6 +193,37 @@ class BasicDataLoader(object):
 
 
 # -------------------- RUN -------------------- #
+            
+@time_process_epoch
+def process_epoch(model, dataloader, objective, optimizer):
+
+    for points, cov in dataloader:
+
+        # Forward pass
+        preds = model(points[:,0], points[:,1])
+        loss = objective(preds, cov, model)
+
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+
+@time_compute_loss
+def compute_loss(model, dataloader, objective, rank, world_size):
+
+    # Compute and communicate loss
+    dataset = dataloader.dataset
+    preds = model(dataset.points[:,0], dataset.points[:,1])
+    loss = objective(preds, dataset.cov, model)
+    if rank > 0: 
+        dist.send(loss, 0)
+    else: 
+        for r in range(1, world_size):
+            worker_loss = torch.zeros(1, dtype=torch.float64)
+            dist.recv(worker_loss, r)
+            loss += worker_loss.item()
+        return loss
 
 
 def run(
@@ -186,31 +251,14 @@ def run(
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     diff_mat = create_second_difference_matrix(num_vars)
+    objective_ = partial(objective, alpha=alpha, diff_mat=diff_mat)
 
     for epoch in range(max_epochs):
 
-        for points, cov in dataloader:
-
-            # Forward pass
-            preds = model(points[:,0], points[:,1])
-            loss = objective(preds, cov, model, alpha, diff_mat)
-
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        # Compute and communicate loss
-        preds = model(dataset.points[:,0], dataset.points[:,1])
-        loss = objective(preds, dataset.cov, model, alpha, diff_mat)
-        if rank > 0: 
-            dist.send(loss, 0)
-        else: 
-            for r in range(1, world_size):
-                worker_loss = torch.zeros(1, dtype=torch.float64)
-                dist.recv(worker_loss, r)
-                loss += worker_loss.item()
-            print(f"epoch {epoch} | loss = {loss}")
+        process_epoch(model, dataloader, objective_, optimizer)
+        loss = compute_loss(model, dataloader, objective_, rank, world_size)
+        if rank == 0:
+            print(f"epoch = {epoch} | loss = {loss}")
 
     # Save model
     if rank == 0:
@@ -227,7 +275,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--backend', default='gloo')
     parser.add_argument('--world_size', type=int)
-    parser.add_argument('--dir', type=str)
     parser.add_argument('--num_facs', type=int)
     parser.add_argument('--alpha', type=float)
     parser.add_argument('--delta', type=float)
@@ -235,19 +282,16 @@ if __name__ == '__main__':
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
-
-    # Configure directories
-    dir_data = os.path.join('.', 'data', args.dir, 'data')
-    dir_cov = os.path.join('.', 'data', args.dir, 'cov')
-    dir_model = os.path.join('.', 'data', args.dir, 'model')
     
     # Seeding
     gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)
 
-    # Delete files from covariance and model directories
-    refresh_directory(dir_cov)
-    refresh_directory(dir_model)
+    # Delete files from various directories
+    refresh_directory(DIR_COV)
+    refresh_directory(DIR_MODEL)
+    if BENCHMARK:
+        refresh_directory(DIR_BENCH)
 
     
     # ---------- COVARIANCE PREPARATION ---------- $
@@ -255,7 +299,7 @@ if __name__ == '__main__':
     print(f"Computing covariance...")
 
     # Get the number of variables
-    path = os.path.join(dir_data, 'data-0.pt')
+    path = os.path.join(DIR_DATA, 'data-0.pt')
     num_vars = torch.load(path).shape[0]
 
     # Generate points then compute covariance
@@ -269,7 +313,7 @@ if __name__ == '__main__':
         t2 = torch.zeros(num_points, dtype=torch.float64)
         t3 = torch.zeros(num_points, dtype=torch.float64)
         n = 0
-        data = read_tensors(dir_data, 'data')
+        data = read_tensors(DIR_DATA, 'data')
         for data_batch in data: 
             n += data_batch.shape[1]
             for i in range(num_points): 
@@ -278,8 +322,8 @@ if __name__ == '__main__':
                 t2[i] += torch.sum(data_batch[row,:])
                 t3[i] += torch.sum(data_batch[col,:])
         cov = (t1 - t2 * t3 / n) / (n - 1)
-        path_points = os.path.join(dir_cov, f'points-{iter}.pt')
-        path_cov = os.path.join(dir_cov, f'cov-{iter}.pt')
+        path_points = os.path.join(DIR_COV, f'points-{iter}.pt')
+        path_cov = os.path.join(DIR_COV, f'cov-{iter}.pt')
         torch.save(points_batch, path_points)
         torch.save(cov, path_cov)
         iter += 1
@@ -295,7 +339,7 @@ if __name__ == '__main__':
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, shared_path, dir_cov, dir_model,
+                rank, args.world_size, shared_path, DIR_COV, DIR_MODEL,
                 num_vars, args.num_facs, args.alpha, args.lr, args.max_epochs, 
                 seeds, run, args.backend
             )
@@ -308,12 +352,20 @@ if __name__ == '__main__':
 
 
     # ---------- EVALUATION ---------- #
-    path = os.path.join(dir_model, 'cov-model.pth')
+        
+    # Plot loadings
+    path = os.path.join(DIR_MODEL, 'cov-model.pth')
     final_model = LowRankCovariance(num_vars, args.num_facs, gen)
     final_model.load_state_dict(torch.load(path))
     df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
     sns.lineplot(data=df)
-    path = os.path.join('.', 'data', args.dir, 'loads.png')
+    path = os.path.join(OUT_DIR, 'loads.png')
     plt.savefig(path)
+
+    # Aggreagate benchmarking
+    if BENCHMARK:
+        aggregate_benchmarks(DIR_BENCH, 'process_epoch', args.world_size, 'mean')
+        aggregate_benchmarks(DIR_BENCH, 'compute_loss', args.world_size, 'mean')
+        aggregate_benchmarks(DIR_BENCH, 'dataset', args.world_size, 'mean')
 
 

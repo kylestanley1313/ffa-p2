@@ -85,10 +85,10 @@ if __name__ == '__main__':
     print(f"Simulating new data...")
 
     # Delete files from directory
-    data_dir = os.path.join('.', 'data', args.dir, 'data')
-    if os.path.exists(data_dir):
-        shutil.rmtree(data_dir)
-    os.makedirs(data_dir)
+    out_dir = os.path.join('.', 'out', args.dir, 'data')
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+    os.makedirs(out_dir)
 
     loadings = build_loadings(load_fcns, args.num_vars)
     err_sds = 0.2 * torch.ones(loadings.shape[0], dtype=torch.float64)
@@ -101,6 +101,6 @@ if __name__ == '__main__':
         gen=gen
     )
 
-    write_generated_tensor(data, data_dir, 'data')
+    write_generated_tensor(data, out_dir, 'data')
 
     print("DONE!")

@@ -7,14 +7,17 @@ import pandas as pd
 import random
 import seaborn as sns
 import shutil
+import sys
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from functools import partial
 from torch.nn.functional import mse_loss
 from torch.utils.data import Dataset, Sampler
 from typing import List
 
+from benchmarking import aggregate_benchmarks, size_dist_obj, time_dist_fcn
 from utils import (
     create_second_difference_matrix, 
     gen_points, 
@@ -36,6 +39,31 @@ from utils import (
 #       * Use orthogonal projection operator
 
 
+# -------------------- GLOBALS -------------------- #
+
+OUT_DIR = os.path.join('.', 'out', 'ffa-dist')
+DIR_DATA = os.path.join(OUT_DIR, 'data')
+DIR_COV = os.path.join(OUT_DIR, 'cov')
+DIR_MODEL = os.path.join(OUT_DIR, 'model')
+DIR_BENCH = os.path.join(OUT_DIR, 'bench')
+BENCHMARK = True
+
+
+# -------------------- BENCHMARKING -------------------- #
+
+time_process_epoch = partial(
+    time_dist_fcn, 
+    dir=DIR_BENCH, prefix='process_epoch', benchmark=BENCHMARK
+)
+time_compute_loss = partial(
+    time_dist_fcn, 
+    dir=DIR_BENCH, prefix='compute_loss', benchmark=BENCHMARK
+)
+size_dataset = partial(
+    size_dist_obj,
+    dir=DIR_BENCH, prefix='dataset', benchmark=BENCHMARK
+)
+
 
 # -------------------- UTILITIES -------------------- #
 
@@ -46,6 +74,7 @@ def second_difference_norm(x, diff_mat):
 
 # -------------------- MODULES -------------------- #
 
+@size_dataset
 class DistributedStratifiedCovarianceDataset(Dataset):
 
     # TODO: Do we need each rank to have same number of points?
@@ -96,6 +125,13 @@ class DistributedStratifiedCovarianceDataset(Dataset):
 
     def get_num_iters(self):
         return self.num_iters
+    
+    def storage(self):
+        """Returns size of dataset (in bytes)."""
+        self.set_all_strata()
+        points_sz = sys.getsizeof(self.points.untyped_storage())
+        cov_sz = sys.getsizeof(self.cov.untyped_storage())
+        return points_sz + cov_sz
     
 
 class DistributedStratifiedDatasetSampler(Sampler):
@@ -313,7 +349,53 @@ def project_model(model: LowRankCovariance, alpha: float, diff_mat: torch.Tensor
     model.set_loads(loads_new)
 
 
-def compute_loss(rank, world_size, model, dataloader):
+@time_process_epoch
+def process_epoch(
+        model, 
+        dataloader, 
+        objective, 
+        optimizer, 
+        gen,
+        num_strata, 
+        alpha,
+        diff_mat,
+        rank, 
+        world_size
+    ):
+
+    # Broadcast stratum sequence from rank 0
+    if rank == 0:
+        strat_seq = torch.randperm(num_strata, generator=gen, dtype=torch.int32)
+    else:
+        strat_seq = torch.zeros(num_strata, dtype=torch.int32)
+    dist.broadcast(strat_seq, 0)
+
+    for s in strat_seq:  # > subepoch
+
+        dataloader.set_stratum(s.item())
+
+        for points, cov in dataloader:
+
+            # Forward pass
+            preds = model(points[:,0], points[:,1])
+            loss = objective(preds, cov)
+
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            # Sync model
+            dist.barrier()
+            sync_model(rank, world_size, model, points)
+
+            # Project model
+            if alpha is not None:
+                project_model(model, alpha, diff_mat)
+
+
+@time_compute_loss
+def compute_loss(model, dataloader, objective, rank, world_size):
 
     # Compute rank-wise loss
     dataloader.set_all_strata()  # give dataloader access to all a worker's points
@@ -321,7 +403,7 @@ def compute_loss(rank, world_size, model, dataloader):
     n = len(dataloader)
     for points, cov in dataloader:
         preds = model(points[:,0], points[:,1])
-        loss += mse_loss(preds, cov, reduction='sum')
+        loss += objective(preds, cov)
     
     # Send loss data when rank > 0
     if rank != 0:
@@ -346,10 +428,20 @@ def compute_loss(rank, world_size, model, dataloader):
         return loss / n
 
 
-def run(rank, world_size, dir_cov, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds):
+def run(
+        rank, 
+        world_size, 
+        dir_cov, 
+        dir_model, 
+        num_vars, 
+        num_facs, 
+        alpha, 
+        lr, 
+        max_epochs, 
+        seeds
+    ):
 
     num_strata = 2 * world_size + 1
-    diff_mat = create_second_difference_matrix(num_vars)
     seed = seeds[rank]
     gen = torch.Generator().manual_seed(seed)
 
@@ -359,42 +451,18 @@ def run(rank, world_size, dir_cov, dir_model, num_vars, num_facs, alpha, lr, max
 
     model = LowRankCovariance(num_vars, num_facs, gen)
     broadcast_model(model, rank, 0)
+
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    diff_mat = create_second_difference_matrix(num_vars)
+    objective = partial(mse_loss, reduction='sum')
 
     for epoch in range(max_epochs):  # > epoch
-        
-        # Broadcast stratum sequence from rank 0
-        if rank == 0:
-            strat_seq = torch.randperm(num_strata, generator=gen, dtype=torch.int32)
-        else:
-            strat_seq = torch.zeros(num_strata, dtype=torch.int32)
-        dist.broadcast(strat_seq, 0)
 
-        for s in strat_seq:  # > subepoch
-
-            dataloader.set_stratum(s.item())
-
-            for points, cov in dataloader:
-
-                # Forward pass
-                preds = model(points[:,0], points[:,1])
-                loss = mse_loss(preds, cov, reduction='sum')
-
-                # Backward pass
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                # Sync model
-                dist.barrier()
-                sync_model(rank, world_size, model, points)
-
-                # Project model
-                if alpha is not None:
-                    project_model(model, alpha, diff_mat)
-
-        # Evaluate loss
-        loss = compute_loss(rank, world_size, model, dataloader)
+        process_epoch(
+            model, dataloader, objective, optimizer, 
+            gen, num_strata, alpha, diff_mat, rank, world_size
+        )
+        loss = compute_loss(model, dataloader, objective, rank, world_size)
         if rank == 0:
             print(f"epoch = {epoch} | loss = {loss}")
 
@@ -408,13 +476,11 @@ def run(rank, world_size, dir_cov, dir_model, num_vars, num_facs, alpha, lr, max
 
 
 
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--backend', default='gloo')
     parser.add_argument('--world_size', type=int)
-    parser.add_argument('--dir', type=str)
     parser.add_argument('--num_facs', type=int)
     parser.add_argument('--alpha', type=float)
     parser.add_argument('--delta', type=float)
@@ -424,22 +490,21 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Configure globals
-    dir_data = f'./data/{args.dir}/data'
-    dir_cov = f'./data/{args.dir}/cov'
-    dir_model = f'./data/{args.dir}/model'
     alpha = None if args.alpha == 0 else args.alpha
     gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)
 
     # Delete files from covariance and model directories
-    refresh_directory(dir_cov)
-    refresh_directory(dir_model)
+    refresh_directory(DIR_COV)
+    refresh_directory(DIR_MODEL)
+    if BENCHMARK:
+        refresh_directory(DIR_BENCH)
 
 
     # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
 
     # Get the number of variables
-    path = os.path.join(dir_data, 'data-0.pt')
+    path = os.path.join(DIR_DATA, 'data-0.pt')
     num_vars = torch.load(path).shape[0]
 
     # Generate strata and a dict that maps blocks to their rank and stratum number
@@ -491,8 +556,8 @@ if __name__ == '__main__':
             points_rank = points_batch[mask]
             stratum_rank = stratum_batch[mask]
 
-            path_points = os.path.join(dir_cov, f'points-{r}.pt')
-            path_stratum = os.path.join(dir_cov, f'stratum-{r}.pt')
+            path_points = os.path.join(DIR_COV, f'points-{r}.pt')
+            path_stratum = os.path.join(DIR_COV, f'stratum-{r}.pt')
 
             if os.path.exists(path_points):
                 old_points_rank = torch.load(path_points)
@@ -511,14 +576,14 @@ if __name__ == '__main__':
     # TODO: Parallelize
 
     for r in range(args.world_size):
-        path_points = os.path.join(dir_cov, f'points-{r}.pt')
+        path_points = os.path.join(DIR_COV, f'points-{r}.pt')
         points = torch.load(path_points)
         num_points = len(points)
         t1 = torch.zeros(num_points, dtype=torch.float64)
         t2 = torch.zeros(num_points, dtype=torch.float64)
         t3 = torch.zeros(num_points, dtype=torch.float64)
         n = 0
-        dataloader = read_tensors(dir_data, 'data')
+        dataloader = read_tensors(DIR_DATA, 'data')
         for batch in dataloader: 
             n += batch.shape[1]
             for i in range(num_points):
@@ -527,7 +592,7 @@ if __name__ == '__main__':
                 t2[i] += torch.sum(batch[row,:])
                 t3[i] += torch.sum(batch[col,:])
             cov = (t1 - t2 * t3 / n) / (n - 1)
-            path_cov = os.path.join(dir_cov, f'cov-{r}.pt')
+            path_cov = os.path.join(DIR_COV, f'cov-{r}.pt')
             torch.save(cov, path_cov)
 
 
@@ -543,7 +608,7 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, shared_path,
-                dir_cov, dir_model, num_vars, args.num_facs, alpha, 
+                DIR_COV, DIR_MODEL, num_vars, args.num_facs, alpha, 
                 args.lr, args.max_epochs, seeds,
                 run, args.backend
             )
@@ -557,10 +622,17 @@ if __name__ == '__main__':
 
     # ---------- EVALUATION ---------- #
 
-    path = os.path.join(dir_model, 'cov-model.pth')
+    # Plot loadings
+    path = os.path.join(DIR_MODEL, 'cov-model.pth')
     final_model = LowRankCovariance(num_vars, args.num_facs, gen)
     final_model.load_state_dict(torch.load(path))
     df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
     sns.lineplot(data=df)
-    path = os.path.join('.', 'data', args.dir, 'loads.png')
+    path = os.path.join(OUT_DIR, 'loads.png')
     plt.savefig(path)
+
+    # Benchmarking
+    if BENCHMARK:
+        aggregate_benchmarks(DIR_BENCH, 'process_epoch', args.world_size, 'mean')
+        aggregate_benchmarks(DIR_BENCH, 'compute_loss', args.world_size, 'mean')
+        aggregate_benchmarks(DIR_BENCH, 'dataset', args.world_size, 'mean')

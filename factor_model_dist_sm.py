@@ -15,11 +15,24 @@ from typing import List
 
 from benchmarking import aggregate_benchmarks, size_dist_obj, time_dist_fcn
 from utils import (
+    create_second_difference_matrix, 
     gen_points, 
     gen_seeds, 
     read_tensors,
     refresh_directory
 )
+
+
+# NOTE: (Projection Problems)
+#   - Current method doesn't make loadings "smoother" it just flattens them
+#     globally or shrinks them/ 
+#   - Ideas: 
+#       * Use Allen and Weylandt norm
+#       * Constrain unit loadings
+#       * Present two methods: one with smoothing and another wihtout
+#       * Smooth covariance a priori
+#       * Smooth loadings after
+#       * Use orthogonal projection operator
 
 
 # -------------------- GLOBALS -------------------- #
@@ -48,6 +61,13 @@ size_dataset = partial(
 )
 
 
+# -------------------- UTILITIES -------------------- #
+
+def second_difference_norm(x, diff_mat):
+    return torch.sqrt(torch.trace(x.t() @ diff_mat @ x) / x.shape[0])
+
+
+
 # -------------------- MODULES -------------------- #
 
 @size_dataset
@@ -55,21 +75,30 @@ class DistributedStratifiedCovarianceDataset(Dataset):
 
     def __init__(self, dir: str, rank: int, world_size: int):
 
-        # Read in this rank's data
-        strat = torch.load(os.path.join(dir, f'stratum-{rank}.pt'))
-        points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
-        cov = torch.load(os.path.join(dir, f'cov-{rank}.pt'))
+        # Read in this rank's data and all ranks' stratum counts
+        num_strata = 2 * world_size + 1
+        strat_counts = torch.zeros(world_size, num_strata, dtype=torch.int32)
+        for r in range(world_size):
+            strat_ = torch.load(os.path.join(dir, f'stratum-{r}.pt'))
+            strat_counts[r, :] = torch.bincount(strat_)
+
+            if r == rank:
+                strat = strat_
+                points = torch.load(os.path.join(dir, f'points-{r}.pt'))
+                cov = torch.load(os.path.join(dir, f'cov-{r}.pt'))
 
         # Create dictionaries that map stratum to points/cov
-        num_strata = 2 * world_size + 1
         self.points = None
         self.cov = None
+        self.num_iters = None
         self.strat_points = {}
         self.strat_cov = {}
+        self.strat_num_iters = {}
         for s in range(num_strata):
             mask = strat == s
             self.strat_points[s] = points[mask]
             self.strat_cov[s] = cov[mask]
+            self.strat_num_iters[s] = strat_counts[:,s].max().item()
 
     def __len__(self):
         return len(self.cov)
@@ -80,10 +109,15 @@ class DistributedStratifiedCovarianceDataset(Dataset):
     def set_stratum(self, stratum):
         self.points = self.strat_points[stratum]
         self.cov = self.strat_cov[stratum]
+        self.num_iters = self.strat_num_iters[stratum]
 
     def set_all_strata(self):
         self.points = torch.cat(list(self.strat_points.values()))
         self.cov = torch.cat(list(self.strat_cov.values()))
+        self.num_iters = None  # do not require inter-rank synchronization 
+
+    def get_num_iters(self):
+        return self.num_iters
     
     def storage(self):
         """Returns size of dataset (in bytes)."""
@@ -105,7 +139,13 @@ class DistributedStratifiedDatasetSampler(Sampler):
 
     def __iter__(self):
         idx = torch.randperm(len(self.dataset), generator=self.gen)
-        return iter(idx.tolist())
+        num_iters = self.dataset.get_num_iters()
+        if num_iters is not None:
+            pad_size = self.dataset.get_num_iters() - len(idx)
+            idx_pad = torch.randperm(len(idx), generator=self.gen)[:pad_size]
+            return iter(idx.tolist() + idx_pad.tolist())
+        else:
+            return iter(idx.tolist())
     
 
 # NOTE: Should this inherit from DataLoader and implement a set_stratum method?
@@ -177,6 +217,7 @@ class LowRankCovariance(nn.Module):
     
 
 
+
 # -------------------- DISTRIBUTION -------------------- #
 
 def init_process(
@@ -187,6 +228,7 @@ def init_process(
         dir_model, 
         num_vars, 
         num_facs, 
+        alpha, 
         lr, 
         max_epochs, 
         seeds, 
@@ -197,7 +239,7 @@ def init_process(
         backend, init_method=f'file://{shared_path}',
         rank=rank, world_size=world_size
     )
-    fcn(rank, world_size, dir_data, dir_model, num_vars, num_facs, lr, max_epochs, seeds)
+    fcn(rank, world_size, dir_data, dir_model, num_vars, num_facs, alpha, lr, max_epochs, seeds)
 
 
 # -------------------- RUN -------------------- #
@@ -224,6 +266,7 @@ def gen_strata(num_workers):
         raise Exception(f"Function does not support num_workers = {num_workers}")
 
     return strata
+
 
 
 def sync_model(
@@ -289,6 +332,16 @@ def broadcast_model(model: LowRankCovariance, rank: int, src: int):
     model.set_loads(loads)
 
 
+def project_model(model: LowRankCovariance, alpha: float, diff_mat: torch.Tensor):
+    loads = model.get_loads()
+    sec_diff_norm = second_difference_norm(loads, diff_mat)
+    if sec_diff_norm > alpha:
+        loads_new = alpha * loads / sec_diff_norm
+    else: 
+        loads_new = loads
+    model.set_loads(loads_new)
+
+
 @time_process_epoch
 def process_epoch(
         model, 
@@ -297,6 +350,8 @@ def process_epoch(
         optimizer, 
         gen,
         num_strata, 
+        alpha,
+        diff_mat,
         rank, 
         world_size
     ):
@@ -323,9 +378,13 @@ def process_epoch(
             loss.backward()
             optimizer.step()
 
-    # Sync model
-    dist.barrier()
-    sync_model(rank, world_size, model, points)
+            # Sync model
+            dist.barrier()
+            sync_model(rank, world_size, model, points)
+
+            # Project model
+            if alpha is not None:
+                project_model(model, alpha, diff_mat)
 
 
 @time_compute_loss
@@ -369,6 +428,7 @@ def run(
         dir_model, 
         num_vars, 
         num_facs, 
+        alpha, 
         lr, 
         max_epochs, 
         seeds
@@ -386,13 +446,14 @@ def run(
     broadcast_model(model, rank, 0)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    diff_mat = create_second_difference_matrix(num_vars)
     objective = partial(mse_loss, reduction='sum')
 
     for epoch in range(max_epochs):  # > epoch
 
         process_epoch(
             model, dataloader, objective, optimizer, 
-            gen, num_strata, rank, world_size
+            gen, num_strata, alpha, diff_mat, rank, world_size
         )
         loss = compute_loss(model, dataloader, objective, rank, world_size)
         if rank == 0:
@@ -414,6 +475,7 @@ if __name__ == '__main__':
     parser.add_argument('--backend', default='gloo')
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--num_facs', type=int)
+    parser.add_argument('--alpha', type=float)
     parser.add_argument('--delta', type=float)
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
@@ -421,6 +483,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     # Configure globals
+    alpha = None if args.alpha == 0 else args.alpha
     gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)
 
@@ -538,7 +601,7 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, shared_path,
-                DIR_COV, DIR_MODEL, num_vars, args.num_facs,
+                DIR_COV, DIR_MODEL, num_vars, args.num_facs, alpha, 
                 args.lr, args.max_epochs, seeds,
                 run, args.backend
             )

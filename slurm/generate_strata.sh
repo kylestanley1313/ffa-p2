@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --account=muh10
-#SBATCH --job-name=testing
+#SBATCH --job-name=generate_strata
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
 #SBATCH -n 20
 #SBATCH --mem-per-cpu=5gb
 #SBATCH --time=24:00:00
-#SBATCH --output=slurm/output/testing_%j.out
+#SBATCH --output=slurm/output/generate_strata_%j.out
 
 # Get started
 echo " "

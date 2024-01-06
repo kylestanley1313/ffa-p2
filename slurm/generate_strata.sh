@@ -1,13 +1,13 @@
 #!/bin/bash
-SBATCH --account=muh10
-SBATCH --job-name=testing
-SBATCH --mail-type=END,FAIL
-SBATCH --mail-user=kms8227@psu.edu
-SBATCH -N 1
-SBATCH -n 20
-SBATCH --mem-per-cpu=5gb
-SBATCH --time=12:00:00
-SBATCH --output=slurm/output/testing_%j.out
+#SBATCH --account=muh10
+#SBATCH --job-name=testing
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=kms8227@psu.edu
+#SBATCH -N 1
+#SBATCH -n 20
+#SBATCH --mem-per-cpu=5gb
+#SBATCH --time=24:00:00
+#SBATCH --output=slurm/output/testing_%j.out
 
 # Get started
 echo " "
@@ -28,7 +28,7 @@ conda activate ffa-p2-priv
 
 
 nproc_list=()
-for ((i=10; i<=20; i++)); do
+for ((i=13; i<=20; i++)); do
     nproc_list+=("$i")
 done
 

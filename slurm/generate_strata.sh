@@ -4,7 +4,7 @@
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
-#SBATCH -n 20
+#SBATCH -n 30
 #SBATCH --mem-per-cpu=5gb
 #SBATCH --time=24:00:00
 #SBATCH --output=slurm/output/generate_strata_%j.out
@@ -28,13 +28,13 @@ conda activate ffa-p2-priv
 
 
 nproc_list=()
-for ((i=13; i<=20; i++)); do
+for ((i=20; i<=30; i++)); do
     nproc_list+=("$i")
 done
 
 for nproc in "${nproc_list[@]}"; do
     echo "Generating strata for $nproc processes..."
-    python generate_strata.py --world_size 20 --num_procs "$nproc"
+    python generate_strata.py --world_size 30 --num_procs "$nproc"
     echo "DONE!"
 done
 

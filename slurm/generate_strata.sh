@@ -34,7 +34,7 @@ done
 
 for nproc in "${nproc_list[@]}"; do
     echo "Generating strata for $nproc processes..."
-    python generate_strata.py --world_size 30 --num_procs "$nproc"
+    python generate_strata.py --world_size 30 --num_procs "$nproc" --seed 12346
     echo "DONE!"
 done
 

@@ -28,13 +28,13 @@ conda activate ffa-p2-priv
 
 
 nproc_list=()
-for ((i=20; i<=30; i++)); do
+for ((i=21; i<=30; i++)); do
     nproc_list+=("$i")
 done
 
 for nproc in "${nproc_list[@]}"; do
     echo "Generating strata for $nproc processes..."
-    python generate_strata.py --world_size 30 --num_procs "$nproc" --seed 12346
+    python generate_strata.py --world_size 30 --num_procs "$nproc" --seed 12345
     echo "DONE!"
 done
 

@@ -374,7 +374,7 @@ if __name__ == '__main__':
     print("Preparing loadings...")
 
     # Delete files from directory
-    out_dir = os.path.join('.', 'out', args.dir, 'data')
+    out_dir = os.path.join('.', 'datasets', args.dir)
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
     os.makedirs(out_dir)

@@ -6,7 +6,7 @@
 #SBATCH -N 1
 #SBATCH -n 30
 #SBATCH --mem-per-cpu=5gb
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=slurm/output/generate_strata_%j.out
 
 # Get started

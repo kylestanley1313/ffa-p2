@@ -7,6 +7,12 @@ from typing import List, Tuple
 
 from utils import gen_seeds
 
+# NOTE: (Ideas)
+#   - If finding non-symmetric strata is easy and symmetric strata are a subset
+#     of non-symmetric strata, then generate the former set then search for the
+#     latter in the generated set. 
+#   - Deterministic algorithm.
+
 
 class ImpossibleStratum(Exception):
     pass

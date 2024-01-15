@@ -14,14 +14,34 @@ from utils import write_generated_tensor
 def op_facs_loads(loads: torch.Tensor, facs: torch.Tensor, ndim: int) -> torch.Tensor:
     """Performs the operation `sum_k(facs[k]*loads[k])."""
     if ndim == 1:
-        raise NotImplementedError
+        return torch.einsum('nk,ka->na', facs, loads)
     elif ndim == 2:
-        raise NotImplementedError
+        return torch.einsum('nk,kab->nab', facs, loads)
     elif ndim == 3:
         return torch.einsum('nk,kabc->nabc', facs, loads)
     else: 
         raise NotImplementedError 
     
+
+class SineFunction1D(object):
+
+    def __init__(self, period=1) -> None:
+        self.ndim = 1
+        self.period = period
+
+    def __call__(self, points: torch.Tensor):
+        return torch.sin(points * 2 * torch.pi / self.period)
+    
+
+class CosineFunction1D(object):
+
+    def __init__(self, period=1) -> None:
+        self.ndim = 1
+        self.period = period
+
+    def __call__(self, points: torch.Tensor):
+        return torch.cos(points * 2 * torch.pi / self.period)
+
 
 class BumpFunction1D(object):
 
@@ -30,7 +50,7 @@ class BumpFunction1D(object):
             center: float,
             scale: float,
             max: float,
-        ):
+        ) -> None:
         self.ndim = 1
         self.center = center
         self.scale = scale
@@ -58,7 +78,7 @@ class BumpFunction2D(object):
             rotation: float,
             scale: List[float],
             max: float
-        ):
+        ) -> None:
         self.ndim = 2
         self.center = center
         self.max = max
@@ -79,6 +99,7 @@ class BumpFunction2D(object):
     def __call__(self, points: torch.Tensor):
 
         # Center, then rotate and scale about origin
+        points = points.clone()
         points -= torch.tensor(self.center)
         points = (torch.inverse(self.rot_mat @ self.scale_mat) @ points.t()).t()
 
@@ -98,7 +119,7 @@ class BumpFunction3D(object):
             rotation: List[float],
             scale: List[float],
             max: float
-        ):
+        ) -> None:
         self.ndim = 3
         self.center = center
         self.max = max
@@ -146,7 +167,7 @@ class BumpFunction3D(object):
 
 
 # ---------- LOADING FUNCTIONS ---------- #
-# NOTE: All loading functions are defined on [0,1]^3
+# NOTE: All loading functions are defined on [0,1]^D
     
 class LoadingFunction(ABC):
     """Base class for LoadingFunctions which build a loading function of 
@@ -180,7 +201,72 @@ class LoadingFunction(ABC):
         return all(d == self.ndim for d in ndims)
 
 
-class CornerPair3D1(LoadingFunction):
+class SineLoading1D(LoadingFunction):
+
+    ndim = 1
+    pieces = [SineFunction1D(period=1)]
+
+
+class CosineLoading1D(LoadingFunction):
+
+    ndim = 1
+    pieces = [CosineFunction1D(period=1)]
+
+
+class BumpPairLoading1D1(LoadingFunction):
+
+    ndim = 1
+    pieces = [
+        BumpFunction1D(0.2, 0.15, 1),
+        BumpFunction1D(0.6, 0.15, 1),
+    ]
+
+
+class BumpPairLoading1D2(LoadingFunction):
+
+    ndim = 1
+    pieces = [
+        BumpFunction1D(0.4, 0.15, 1),
+        BumpFunction1D(0.8, 0.15, 1),
+    ]
+
+
+class CornerPairLoading2D1(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.25, 0.25], 0, [0.15, 0.15], 1),
+        BumpFunction2D([0.75, 0.75], 0, [0.15, 0.15], 1),
+    ]
+
+
+class CornerPairLoading2D2(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.25, 0.75], 0, [0.15, 0.15], 1),
+        BumpFunction2D([0.75, 0.25], 0, [0.15, 0.15], 1),
+    ]
+
+class CornerPairLoading2D3(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.25, 0.25], 0, [0.25, 0.25], 1),
+        BumpFunction2D([0.75, 0.75], 0, [0.25, 0.25], 1),
+    ]
+
+
+class CornerPairLoading2D4(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.25, 0.75], 0, [0.25, 0.25], 1),
+        BumpFunction2D([0.75, 0.25], 0, [0.25, 0.25], 1),
+    ]
+
+
+class CornerPairLoading3D1(LoadingFunction):
 
     ndim = 3
     pieces = [
@@ -189,7 +275,7 @@ class CornerPair3D1(LoadingFunction):
     ]
 
 
-class CornerPair3D2(LoadingFunction):
+class CornerPairLoading3D2(LoadingFunction):
 
     ndim = 3
     pieces = [
@@ -198,7 +284,7 @@ class CornerPair3D2(LoadingFunction):
     ]
 
 
-class CornerPair3D3(LoadingFunction):
+class CornerPairLoading3D3(LoadingFunction):
 
     ndim = 3
     pieces = [
@@ -207,7 +293,7 @@ class CornerPair3D3(LoadingFunction):
     ]
 
 
-class CornerPair3D4(LoadingFunction):
+class CornerPairLoading3D4(LoadingFunction):
 
     ndim = 3
     pieces = [
@@ -261,22 +347,65 @@ class LoadingScheme(ABC):
         for fcn in self.loading_fcns:
             ndims.append(fcn.ndim)
         return all(d == self.ndim for d in ndims)
+    
+
+class TrigScheme1D1(LoadingScheme):
+
+    ndim = 1
+    loading_fcns = [
+        SineLoading1D, 
+        CosineLoading1D
+    ]
+    scales = [1, 1]
+
+
+class BumpScheme1D1(LoadingScheme):
+
+    ndim = 1
+    loading_fcns = [
+        BumpPairLoading1D1, 
+        BumpPairLoading1D2
+    ]
+    scales = [1, 1]
+
+
+class BumpScheme2D1(LoadingScheme):
+
+    ndim = 2
+    loading_fcns = [
+        CornerPairLoading2D1, 
+        CornerPairLoading2D2
+    ]
+    scales = [1, 1]
+
+class BumpScheme2D2(LoadingScheme):
+
+    ndim = 2
+    loading_fcns = [
+        CornerPairLoading2D3,
+        CornerPairLoading2D4
+    ]
+    scales = [1, 1]
         
 
-class BumpScheme1(LoadingScheme):
+class BumpScheme3D1(LoadingScheme):
 
     ndim = 3
     loading_fcns = [
-        CornerPair3D1, 
-        CornerPair3D2,
-        CornerPair3D3,
-        CornerPair3D4
+        CornerPairLoading3D1, 
+        CornerPairLoading3D2,
+        CornerPairLoading3D3,
+        CornerPairLoading3D4
     ]
-    scales = [4, 3, 2, 1]
+    scales = [1, 1, 1, 1]
 
 
 LOADING_SCHEMES = {
-    'BumpScheme1': BumpScheme1
+    'TrigScheme1D1': TrigScheme1D1,
+    'BumpScheme1D1': BumpScheme1D1,
+    'BumpScheme2D1': BumpScheme2D1,
+    'BumpScheme2D2': BumpScheme2D2,
+    'BumpScheme3D1': BumpScheme3D1,
 }
 
 
@@ -403,7 +532,7 @@ if __name__ == '__main__':
 
     print("Simulating new data...")
 
-    err_sd = 0.2
+    err_sd = 0.5
     data = simulate_ffm_data(
         loads, 
         err_sd,

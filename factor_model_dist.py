@@ -1,24 +1,30 @@
 import argparse
-import matplotlib.pyplot as plt
+import numpy as np
 import os
-import pandas as pd
-import seaborn as sns
 import sys
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from functools import partial
+from sklearn.decomposition import PCA
 from torch.nn.functional import mse_loss
 from torch.utils.data import Dataset, Sampler
-from typing import List
+from typing import List, Optional, Tuple
 
 from benchmarking import aggregate_benchmarks, size_dist_obj, time_dist_fcn
 from utils import (
+    flatten_dataset,
     gen_points, 
     gen_seeds, 
+    multiply_list,
     read_tensors,
     refresh_directory
+)
+from utils_plotting import (
+    plot_line_for_1d_loads,
+    plot_heatmap_for_2d_loads,
+    plot_heatmap_for_3d_loads
 )
 
 
@@ -27,6 +33,7 @@ from utils import (
 OUT_DIR = os.path.join('.', 'out', 'ffa-dist')
 DIR_DATA = os.path.join(OUT_DIR, 'data')
 DIR_COV = os.path.join(OUT_DIR, 'cov')
+DIR_INIT = os.path.join(OUT_DIR, 'init')
 DIR_MODEL = os.path.join(OUT_DIR, 'model')
 DIR_BENCH = os.path.join(OUT_DIR, 'bench')
 BENCHMARK = True
@@ -149,11 +156,17 @@ class StratifiedDataLoader(object):
 # TODO: Move sync_model functionality into this class
 class LowRankCovariance(nn.Module):
 
-    def __init__(self, num_vars: int, num_facs: int, gen: torch.Generator):
+    def __init__(
+            self, 
+            num_vars: int, 
+            num_facs: int, 
+            init_path: Optional[str] = None
+        ):
         super().__init__()
         self.num_facs = num_facs
         self.loads = nn.Embedding(num_vars, num_facs, dtype=torch.float64)  # TODO: Custom initialization (SVD?)
-        self.loads.weight.data = torch.randn(num_vars, num_facs, generator=gen, dtype=torch.float64)
+        if init_path:
+            self.loads.weight.data = torch.load(init_path)
 
     def forward(self, idx0, idx1):
         loads0 = self.loads(idx0)
@@ -187,6 +200,8 @@ def init_process(
         dir_model, 
         num_vars, 
         num_facs, 
+        init_path,
+        batch_size,
         lr, 
         max_epochs, 
         seeds, 
@@ -197,7 +212,12 @@ def init_process(
         backend, init_method=f'file://{shared_path}',
         rank=rank, world_size=world_size
     )
-    fcn(rank, world_size, dir_data, dir_model, num_vars, num_facs, lr, max_epochs, seeds)
+    fcn(
+        rank, world_size, 
+        dir_data, dir_model, 
+        num_vars, num_facs, init_path,
+        batch_size, lr, max_epochs, seeds
+    )
 
 
 # -------------------- RUN -------------------- #
@@ -210,20 +230,19 @@ def fair_allocate(num_items: int, num_groups: int) -> List[int]:
     return out
 
 
-def gen_strata(num_workers):
-
-    if num_workers == 2: 
-        strata = [
-            ((0, 0), (1, 1)),
-            ((2, 2), (3, 3)),
-            ((1, 0), (3, 2)),
-            ((2, 0), (3, 1)),
-            ((3, 0), (2, 1)),
-        ]
-    else: 
-        raise Exception(f"Function does not support num_workers = {num_workers}")
-
-    return strata
+def gen_strata(nprocs: int) -> List[Tuple[Tuple]]:
+    path = os.path.join('strata', f'nprocs-{nprocs}.pt')
+    if os.path.exists(path):
+        tensor = torch.load(path)
+        num_strata = 2 * nprocs + 1
+        strata = [None] * num_strata
+        for s in range(num_strata):
+            mask = tensor[:,0] == s
+            stratum = tuple(tuple(s_) for s_ in tensor[mask, 1:].tolist())
+            strata[s] = stratum
+        return strata
+    else:
+        raise Exception(f"Strata do not exist for {nprocs} processes.")
 
 
 def sync_model(
@@ -309,7 +328,6 @@ def process_epoch(
     dist.broadcast(strat_seq, 0)
 
     for s in strat_seq:  # > subepoch
-
         dataloader.set_stratum(s.item())
 
         for points, cov in dataloader:
@@ -369,6 +387,8 @@ def run(
         dir_model, 
         num_vars, 
         num_facs, 
+        init_path,
+        batch_size,
         lr, 
         max_epochs, 
         seeds
@@ -380,21 +400,22 @@ def run(
 
     dataset = DistributedStratifiedCovarianceDataset(dir_cov, rank, world_size)
     sampler = DistributedStratifiedDatasetSampler(dataset, gen)
-    dataloader = StratifiedDataLoader(dataset, sampler, batch_size=3)
+    dataloader = StratifiedDataLoader(dataset, sampler, batch_size=batch_size)
 
-    model = LowRankCovariance(num_vars, num_facs, gen)
+    model = LowRankCovariance(num_vars, num_facs, init_path)
     broadcast_model(model, rank, 0)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     objective = partial(mse_loss, reduction='sum')
 
-    for epoch in range(max_epochs):  # > epoch
+    for epoch in range(max_epochs):
 
         process_epoch(
             model, dataloader, objective, optimizer, 
             gen, num_strata, rank, world_size
         )
         loss = compute_loss(model, dataloader, objective, rank, world_size)
+
         if rank == 0:
             print(f"epoch = {epoch} | loss = {loss}")
 
@@ -411,13 +432,20 @@ def run(
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--backend', default='gloo')
+    parser.add_argument('--dataset', type=str)
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--num_facs', type=int)
     parser.add_argument('--delta', type=float)
+    parser.add_argument(
+        '--init_method', type=str, 
+        choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
+    )
+    parser.add_argument('--init_perc', type=float, default=1.0)
+    parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--seed', type=int, default=12345)
+    parser.add_argument('--backend', default='gloo')
     args = parser.parse_args()
 
     # Configure globals
@@ -425,17 +453,21 @@ if __name__ == '__main__':
     seeds = gen_seeds(gen, args.world_size)
 
     # Delete files from covariance and model directories
+    refresh_directory(DIR_DATA)
     refresh_directory(DIR_COV)
+    refresh_directory(DIR_INIT)
     refresh_directory(DIR_MODEL)
     if BENCHMARK:
         refresh_directory(DIR_BENCH)
 
+    # Flatten dataset, getting `grid_shape` and `num_vars` along the way
+    dir_dataset = os.path.join('.', 'datasets', args.dataset)
+    grid_shape = flatten_dataset(dir_dataset, DIR_DATA)
+    num_vars = multiply_list(grid_shape)
+
 
     # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
-
-    # Get the number of variables
-    path = os.path.join(DIR_DATA, 'data-0.pt')
-    num_vars = torch.load(path).shape[0]
+    print("Stratifying training points and allocating to processes...")
 
     # Generate strata and a dict that maps blocks to their rank and stratum number
     strata = gen_strata(args.world_size)
@@ -461,7 +493,7 @@ if __name__ == '__main__':
     # For worker i (i = 0, ..., world_size - 1):
     #   - Create points-{i}.pt file of points
     #   - Create stratum-{i}.pt file of strata
-    points_loader = gen_points(num_vars, args.delta, 50)
+    points_loader = gen_points(grid_shape, args.delta, int(1.2 * num_vars))
     for points_batch in points_loader:
         sz = len(points_batch)
 
@@ -499,12 +531,11 @@ if __name__ == '__main__':
             torch.save(stratum_rank, path_stratum)
 
 
-
     # ---------- COVARIANCE PREPARATION ---------- #
+    print("Computing covariance...")
 
     # Compute covariance for each rank's points
     # TODO: Parallelize
-
     for r in range(args.world_size):
         path_points = os.path.join(DIR_COV, f'points-{r}.pt')
         points = torch.load(path_points)
@@ -515,16 +546,54 @@ if __name__ == '__main__':
         n = 0
         dataloader = read_tensors(DIR_DATA, 'data')
         for batch in dataloader: 
-            n += batch.shape[1]
+            n += len(batch)
             for i in range(num_points):
                 row, col = points[i, :]
-                t1[i] += torch.sum(batch[row,:] * batch[col,:])
-                t2[i] += torch.sum(batch[row,:])
-                t3[i] += torch.sum(batch[col,:])
+                t1[i] += torch.sum(batch[:,row] * batch[:,col])
+                t2[i] += torch.sum(batch[:,row])
+                t3[i] += torch.sum(batch[:,col])
             cov = (t1 - t2 * t3 / n) / (n - 1)
             path_cov = os.path.join(DIR_COV, f'cov-{r}.pt')
             torch.save(cov, path_cov)
 
+
+    # ---------- INITIALIZATION ---------- #
+    print("Initializing loadings...")
+
+    pca_svd_solvers = {
+        'pca_full': 'full',
+        'pca_arpack': 'arpack',
+        'pca_randomized': 'randomized'
+    }
+    init_path = os.path.join(DIR_INIT, 'init_loads.pt')
+    if args.init_method == 'random':
+        init_loads = torch.randn(num_vars, args.num_facs, generator=gen, dtype=torch.float64)
+    else:
+
+        # Read in (possibly subsampled) data
+        data = []
+        dataloader = read_tensors(DIR_DATA, 'data')
+        for batch in dataloader:
+            n = len(batch)
+            num_to_keep = int(n * args.init_perc)
+            idx = torch.randperm(n, generator=gen)
+            data_ = batch[idx[:num_to_keep]]
+            data.append(data_)
+        data = torch.cat(data)
+
+        # Prepare PCA estimator
+        seed = gen_seeds(gen, 1)
+        svd_solver = pca_svd_solvers[args.init_method]
+        pca = PCA(args.num_facs, svd_solver=svd_solver, random_state=seed)
+
+        # Initialize loadings then write to file
+        pca.fit(data)
+        loads = np.matmul(
+            np.diag(np.sqrt(pca.singular_values_)),
+            pca.components_
+        )
+        loads = torch.tensor(loads, dtype=torch.float64)
+        torch.save(loads.t(), init_path)
 
     # ---------- DISTRIBUTED RUN ---------- #
 
@@ -538,8 +607,8 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, shared_path,
-                DIR_COV, DIR_MODEL, num_vars, args.num_facs,
-                args.lr, args.max_epochs, seeds,
+                DIR_COV, DIR_MODEL, num_vars, args.num_facs, init_path,
+                args.batch_size, args.lr, args.max_epochs, seeds,
                 run, args.backend
             )
         )
@@ -551,15 +620,25 @@ if __name__ == '__main__':
 
 
     # ---------- EVALUATION ---------- #
-
+        
     # Plot loadings
     path = os.path.join(DIR_MODEL, 'cov-model.pth')
-    final_model = LowRankCovariance(num_vars, args.num_facs, gen)
+    final_model = LowRankCovariance(num_vars, args.num_facs, init_path)
     final_model.load_state_dict(torch.load(path))
-    df = pd.DataFrame(final_model.loads.weight.data.numpy(), columns=['l1', 'l2'])
-    sns.lineplot(data=df)
-    path = os.path.join(OUT_DIR, 'loads.png')
-    plt.savefig(path)
+    loads = final_model.loads.weight.reshape(grid_shape + [args.num_facs])
+    ndim = len(grid_shape)
+    dims = list(range(ndim + 1))
+    loads = loads.permute(dims[-1:] + dims[:ndim])
+
+    for k in range(args.num_facs):
+        if len(grid_shape) == 1:
+            plot_line_for_1d_loads(loads.data, k)
+        elif len(grid_shape) == 2:
+            plot_heatmap_for_2d_loads(loads.data, k)
+        elif len(grid_shape) == 3:
+            plot_heatmap_for_3d_loads(loads.data, k, 5)
+        else:
+            print(f"`grid_shape` must have length <= 3!")
 
     # Benchmarking
     if BENCHMARK:

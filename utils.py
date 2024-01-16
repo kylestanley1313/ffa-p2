@@ -21,13 +21,13 @@ def gen_seeds(gen, size):
         return seeds.tolist()
     
 
-def write_generated_tensor(tensor: Generator, dir: str, prefix: str):
-    for i, batch in enumerate(tensor):
+def write_generated_tensor(tensor_loader: Generator, dir: str, prefix: str):
+    for i, batch in enumerate(tensor_loader):
         path = os.path.join(dir, f'{prefix}-{i}.pt')
         torch.save(batch, path)
 
 
-def read_tensors(dir, prefix):
+def read_tensors(dir: str, prefix: str) -> Generator:
     files = sorted(os.listdir(dir))
     for f in files:
         if f.startswith(prefix) and f.endswith('.pt'):

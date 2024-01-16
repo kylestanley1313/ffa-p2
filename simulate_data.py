@@ -6,7 +6,8 @@ import torch
 from abc import ABC, abstractmethod
 from typing import List
 
-from utils import write_generated_tensor
+from config import load_config
+from utils import refresh_directory, write_generated_tensor
 
 
 # ---------- UTILITIES ---------- #
@@ -459,7 +460,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument(
         '--dir',
-        help="Directory in which simulated data will be stored."
+        help="Dataset directory in which simulated data will be stored."
     )
     parser.add_argument(
         '--grid_shape', nargs='+', type=int,
@@ -482,12 +483,17 @@ if __name__ == '__main__':
         help="Maximum number of samples per output file."
     )
     parser.add_argument(
+        '--config', type=str,
+        help="Configuration (i.e., mode) in which to run script."
+    )
+    parser.add_argument(
         '--seed', default=12345,
         help="Integer used to seed generator."
     )
     args = parser.parse_args()
 
     # Configure globals
+    config = load_config(args.config)
     load_scheme = LOADING_SCHEMES[args.load_scheme]()
     gen = torch.Generator().manual_seed(args.seed)
 
@@ -503,10 +509,8 @@ if __name__ == '__main__':
     print("Preparing loadings...")
 
     # Delete files from directory
-    out_dir = os.path.join('.', 'datasets', args.dir)
-    if os.path.exists(out_dir):
-        shutil.rmtree(out_dir)
-    os.makedirs(out_dir)
+    out_dir = os.path.join(config.scratch_root, 'datasets', args.dir)
+    refresh_directory(out_dir)
 
     # Generate `points` and `indices` from `grid_shape`
     points = []
@@ -526,14 +530,12 @@ if __name__ == '__main__':
     # ---------- ERROR PREP ---------- #
 
     # TODO: Error preparation
-
+    err_sd = 0.25
 
     # ---------- DATA SIMULATION ---------- #
 
     print("Simulating new data...")
-
-    err_sd = 0.5
-    data = simulate_ffm_data(
+    dataloader = simulate_ffm_data(
         loads, 
         err_sd,
         num_train=args.num_train,
@@ -541,7 +543,6 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         gen=gen
     )
-
-    write_generated_tensor(data, out_dir, 'data')
+    write_generated_tensor(dataloader, out_dir, 'data')
 
     print("DONE!")

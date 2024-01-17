@@ -2,29 +2,34 @@ import os
 
 
 class Config(object):
+
     root = os.path.abspath(os.path.dirname(__file__))
     scratch_root = os.path.abspath(os.path.dirname(__file__))
-    debug = False
+    path_shared = os.path.join(root, 'tmp', 'shared_file')
+    
+    backend = 'gloo'
+
+    benchmark = False
 
 
-class LocalDebugConfig(Config):
-    debug = True
+class LocalBenchmarkConfig(Config):
+    benchmark = True
 
 
 class RoarConfig(Config):
     scratch_root = '/storage/home/kms8227/scratch/ffa-p2-priv'
 
 
-class RoarDebugConfig(Config):
+class RoarBenchmarkConfig(Config):
     scratch_root = '/storage/home/kms8227/scratch/ffa-p2-priv'
-    debug = True
+    benchmark = True
 
 
 CONFIGS = {
     'local': Config,
-    'local_debug': LocalDebugConfig,
+    'local_benchmark': LocalBenchmarkConfig,
     'roar': RoarConfig,
-    'roar_debug': RoarDebugConfig
+    'roar_benchmark': RoarBenchmarkConfig
 }
 
 

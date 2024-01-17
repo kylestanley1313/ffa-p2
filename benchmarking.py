@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import torch.distributed as dist
 from functools import partial
+from typing import Any, List, Optional
 
 
 def time_dist_fcn(fcn, dir, prefix, benchmark):
@@ -45,17 +46,23 @@ def size_dist_obj(init, dir, prefix, benchmark):
     return wrapper if benchmark else init
 
 
-def aggregate_benchmarks(dir, prefix, world_size, reduction):
+def aggregate_benchmarks(
+        dir: str, 
+        prefix: str, 
+        reduction: Optional[str] = None
+    ) -> List[List[Any]]:
 
+    files = [f for f in os.listdir(dir) if f.startswith(prefix)]
     dfs = []
-    for r in range(world_size):
-        path = os.path.join(dir, f'{prefix}-{r}.csv')
+    for f in files:
+        path = os.path.join(dir, f)
         dfs.append(pd.read_csv(path, header=None))
     
-    if reduction == 'mean':
-        df = pd.concat(dfs, ignore_index=True)
-        out = round(df.mean().item(), 4)
-        print(f"Mean {prefix}: {out}")
+    df = pd.concat(dfs, ignore_index=True)
+    if reduction is None:
+        return df.values.tolist()
+    elif reduction == 'mean':
+        return [[f'mean {prefix}', df.mean().item()]]
     else:
         raise Exception(f"Invalid value passed to `reduction`.")
         

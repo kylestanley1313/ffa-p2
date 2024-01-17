@@ -509,8 +509,8 @@ if __name__ == '__main__':
     print("Preparing loadings...")
 
     # Delete files from directory
-    out_dir = os.path.join(config.scratch_root, 'datasets', args.dir)
-    refresh_directory(out_dir)
+    dir_out = os.path.join(config.scratch_root, 'datasets', args.dir)
+    refresh_directory(dir_out)
 
     # Generate `points` and `indices` from `grid_shape`
     points = []
@@ -543,6 +543,6 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         gen=gen
     )
-    write_generated_tensor(dataloader, out_dir, 'data')
+    write_generated_tensor(dataloader, dir_out, 'data')
 
     print("DONE!")

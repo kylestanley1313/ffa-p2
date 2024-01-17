@@ -2,6 +2,7 @@ import argparse
 import os
 import numpy as np
 import sys
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -13,7 +14,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, Sampler
 from typing import Callable, List, Optional
 
-from benchmarking import aggregate_benchmarks, size_dist_obj, time_dist_fcn
+from benchmarking import size_dist_obj, time_dist_fcn
+from config import load_config
 from utils import (
     create_second_difference_matrix, 
     flatten_dataset,
@@ -21,40 +23,11 @@ from utils import (
     gen_seeds, 
     multiply_list,
     read_tensors,
-    refresh_directory
-)
-from utils_plotting import (
-    plot_line_for_1d_loads,
-    plot_heatmap_for_2d_loads,
-    plot_heatmap_for_3d_loads
+    refresh_directory,
+    remove_file,
+    write_rows_to_csv
 )
 
-
-# -------------------- GLOBALS -------------------- #
-
-OUT_DIR = os.path.join('.', 'out', 'ffa-ddp')
-DIR_DATA = os.path.join(OUT_DIR, 'data')
-DIR_COV = os.path.join(OUT_DIR, 'cov')
-DIR_INIT = os.path.join(OUT_DIR, 'init')
-DIR_MODEL = os.path.join(OUT_DIR, 'model')
-DIR_BENCH = os.path.join(OUT_DIR, 'bench')
-BENCHMARK = True
-
-
-# -------------------- BENCHMARKING -------------------- #
-
-time_process_epoch = partial(
-    time_dist_fcn, 
-    dir=DIR_BENCH, prefix='process_epoch', benchmark=BENCHMARK
-)
-time_compute_loss = partial(
-    time_dist_fcn, 
-    dir=DIR_BENCH, prefix='compute_loss', benchmark=BENCHMARK
-)
-size_dataset = partial(
-    size_dist_obj,
-    dir=DIR_BENCH, prefix='dataset', benchmark=BENCHMARK
-)
 
 
 # -------------------- UTILITIES -------------------- #
@@ -79,68 +52,28 @@ def objective(
         return err
 
 
-# -------------------- DISTRIBUTION -------------------- #
-
-def init_process(
-        rank: int, 
-        world_size: int, 
-        shared_path: str,
-        dir_cov: str,
-        dir_model: str,
-        grid_shape: List[int],
-        num_facs: int, 
-        init_path: str,
-        alpha: float,
-        batch_size: int,
-        lr: float, 
-        max_epochs: int, 
-        seed: int, 
-        fcn: Callable, 
-        backend: str
-    ):
-    dist.init_process_group(
-        backend, init_method=f'file://{shared_path}',
-        rank=rank, world_size=world_size
-    )
-    fcn(
-        rank, world_size, dir_cov, dir_model,
-        grid_shape, num_facs, init_path, alpha,
-        batch_size, lr, max_epochs, seed
-    )
-
-
 # -------------------- MODULES -------------------- #
 
 class LowRankCovariance(nn.Module):
 
     def __init__(
             self, 
-            grid_shape: List[int], 
+            num_vars: int, 
             num_facs: int, 
-            init_path: Optional[str] = None
+            path_init: Optional[str] = None
         ):
         super().__init__()
-        num_vars = multiply_list(grid_shape)
-        self.ndim = len(grid_shape)
-        self.grid_shape = grid_shape
         self.num_facs = num_facs
-        self.loads_flat = nn.Embedding(num_vars, num_facs, dtype=torch.float64)
-        if init_path:
-            self.loads_flat.weight.data = torch.load(init_path)
+        self.loads = nn.Embedding(num_vars, num_facs, dtype=torch.float64)
+        if path_init:
+            self.loads.weight.data = torch.load(path_init)
 
     def forward(self, idx0, idx1):
-        lf0 = self.loads_flat(idx0)
-        lf1 = self.loads_flat(idx1)
-        return (lf0 * lf1).sum(dim=1)
-    
-    @property
-    def loads(self):
-        loads = self.loads_flat.weight.reshape(self.grid_shape + [self.num_facs])
-        dims = list(range(self.ndim + 1))
-        return loads.permute(dims[-1:] + dims[0:self.ndim])
+        loads0 = self.loads(idx0)
+        loads1 = self.loads(idx1)
+        return (loads0 * loads1).sum(dim=1)
 
 
-@size_dataset
 class DistributedCovarianceDataset(Dataset):
 
     def __init__(self, dir: str, rank: int, world_size: int):
@@ -217,10 +150,10 @@ class BasicDataLoader(object):
         if cnt > 0:
             yield self.dataset[curr_batch[:cnt]]
 
-
+    
 # -------------------- RUN -------------------- #
-            
-@time_process_epoch
+
+
 def process_epoch(model, dataloader, objective, optimizer):
 
     for points, cov in dataloader:
@@ -235,7 +168,6 @@ def process_epoch(model, dataloader, objective, optimizer):
         optimizer.step()
 
 
-@time_compute_loss
 def compute_loss(model, dataloader, objective, rank, world_size):
 
     # Compute and communicate loss
@@ -252,28 +184,75 @@ def compute_loss(model, dataloader, objective, rank, world_size):
         return loss
 
 
+def init_process(
+        rank: int, 
+        world_size: int, 
+        path_shared: str,
+        config: str,
+        dir_out: str,
+        grid_shape: List[int],
+        num_facs: int, 
+        alpha: float,
+        batch_size: int,
+        lr: float, 
+        max_epochs: int, 
+        seed: int, 
+        fcn: Callable, 
+        backend: str
+    ):
+    dist.init_process_group(
+        backend, init_method=f'file://{path_shared}',
+        rank=rank, world_size=world_size
+    )
+    fcn(
+        rank, world_size, config, dir_out,
+        grid_shape, num_facs, alpha,
+        batch_size, lr, max_epochs, seed
+    )
+
+
 def run(
         rank: int, 
         world_size: int, 
-        dir_cov: str,
-        dir_model: str,
+        config: str,
+        dir_out: str,
         grid_shape: List[int], 
         num_facs: int, 
-        init_path: str,
         alpha: float,
         batch_size: int,
         lr: float, 
         max_epochs: int, 
         seed: int
     ) -> None:
-    
-    gen = torch.Generator().manual_seed(seed)
 
-    dataset = DistributedCovarianceDataset(dir_cov, rank, world_size)
+    config = load_config(config)
+    gen = torch.Generator().manual_seed(seed)
+    
+    # Set directories
+    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
+    dir_bench = os.path.join(dir_out, 'bench')
+
+    # Get benchmarking wrappers
+    process_epoch_ = time_dist_fcn(
+        fcn=process_epoch,
+        dir=dir_bench,
+        prefix='process_epoch',
+        benchmark=config.benchmark
+    )
+    Dataset_ = size_dist_obj(
+        init=DistributedCovarianceDataset,
+        dir=dir_bench,
+        prefix='dataset',
+        benchmark=config.benchmark
+    )
+
+    dataset = Dataset_(dir_cov, rank, world_size)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
-    model = LowRankCovariance(grid_shape, num_facs, init_path)
+    num_vars = multiply_list(grid_shape)
+    path_init = os.path.join(dir_out, 'init_loads.pt')
+    model = LowRankCovariance(num_vars, num_facs, path_init)
     model = DDP(model)
 
     diff_mat = create_second_difference_matrix(grid_shape)
@@ -282,16 +261,16 @@ def run(
 
     for epoch in range(max_epochs):
 
-        process_epoch(model, dataloader, objective_, optimizer)
+        process_epoch_(model, dataloader, objective_, optimizer)
         loss = compute_loss(model, dataloader, objective_, rank, world_size)
         if rank == 0:
             print(f"epoch = {epoch} | loss = {loss}")
 
     # Save model
     if rank == 0:
-        path = os.path.join(dir_model, 'cov-model.pth')
+        path = os.path.join(dir_out, 'cov-model.pth')
         state_dict = model.state_dict()
-        state_dict['loads_flat.weight'] = state_dict.pop('module.loads_flat.weight')  # Replace DDP key
+        state_dict['loads.weight'] = state_dict.pop('module.loads.weight')  # Replace DDP key
         torch.save(state_dict, path)
 
     dist.destroy_process_group()
@@ -300,7 +279,9 @@ def run(
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str)
     parser.add_argument('--dataset', type=str)
+    parser.add_argument('--dir_out', type=str)
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--num_facs', type=int)
     parser.add_argument('--alpha', type=float, default=0)
@@ -314,34 +295,42 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--seed', type=int, default=12345)
-    parser.add_argument('--backend', default='gloo')
     args = parser.parse_args()
+    
+    config = load_config(args.config)
+
+    # Set directories and paths
+    dir_dataset = os.path.join(config.scratch_root, 'datasets', args.dataset)
+    dir_out = os.path.join('out', args.dir_out)
+    dir_data = os.path.join(config.scratch_root, dir_out, 'data')
+    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
+    dir_bench = os.path.join(dir_out, 'bench')
+    path_init = os.path.join(dir_out, 'init_loads.pt')
+    path_model = os.path.join(dir_out, 'cov-model.pth')
+    other_bench_path = os.path.join(dir_bench, 'other.csv')
     
     # Seeding
     gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)
 
     # Delete files from various directories
-    refresh_directory(DIR_DATA)
-    refresh_directory(DIR_COV)
-    refresh_directory(DIR_INIT)
-    refresh_directory(DIR_MODEL)
-    if BENCHMARK:
-        refresh_directory(DIR_BENCH)
+    refresh_directory(dir_data)
+    refresh_directory(dir_cov)
+    if config.benchmark:
+        refresh_directory(dir_bench)
+    remove_file(path_init)
+    remove_file(path_model)
 
     # Flatten dataset, getting `grid_shape` and `num_vars` along the way
-    dir_dataset = os.path.join('.', 'datasets', args.dataset)
-    grid_shape = flatten_dataset(dir_dataset, DIR_DATA)
+    grid_shape = flatten_dataset(dir_dataset, dir_data)
     num_vars = multiply_list(grid_shape)
-
-    # Create difference matrix
-    diff_mat = create_second_difference_matrix(grid_shape)
 
 
     # ---------- COVARIANCE PREPARATION ---------- $
     print(f"Computing covariance...")
 
     # Generate points then compute covariance
+    start = time.time()
     cov_batch_size_per_proc = int((num_vars ** 2) / 18)  # TODO: Why? Better choice?
     cov_batch_size = cov_batch_size_per_proc * args.world_size
     points = gen_points(grid_shape, args.delta, cov_batch_size)
@@ -352,7 +341,7 @@ if __name__ == '__main__':
         t2 = torch.zeros(num_points, dtype=torch.float64)
         t3 = torch.zeros(num_points, dtype=torch.float64)
         n = 0
-        data = read_tensors(DIR_DATA, 'data')
+        data = read_tensors(dir_data, 'data')
         for data_batch in data: 
             n += len(data_batch)
             for i in range(num_points): 
@@ -361,29 +350,31 @@ if __name__ == '__main__':
                 t2[i] += torch.sum(data_batch[:,row])
                 t3[i] += torch.sum(data_batch[:,col])
         cov = (t1 - t2 * t3 / n) / (n - 1)
-        path_points = os.path.join(DIR_COV, f'points-{iter}.pt')
-        path_cov = os.path.join(DIR_COV, f'cov-{iter}.pt')
+        path_points = os.path.join(dir_cov, f'points-{iter}.pt')
+        path_cov = os.path.join(dir_cov, f'cov-{iter}.pt')
         torch.save(points_batch, path_points)
         torch.save(cov, path_cov)
         iter += 1
+    end = time.time()
+    write_rows_to_csv(other_bench_path, [['covariance', end - start]])
         
 
     # ---------- INITIALIZATION ---------- #
     print("Initializing loadings...")
 
+    start = time.time()
     pca_svd_solvers = {
         'pca_full': 'full',
         'pca_arpack': 'arpack',
         'pca_randomized': 'randomized'
     }
-    init_path = os.path.join(DIR_INIT, 'init_loads.pt')
     if args.init_method == 'random':
         init_loads = torch.randn(num_vars, args.num_facs, generator=gen, dtype=torch.float64)
     else:
 
         # Read in (possibly subsampled) data
         data = []
-        dataloader = read_tensors(DIR_DATA, 'data')
+        dataloader = read_tensors(dir_data, 'data')
         for batch in dataloader:
             n = len(batch)
             num_to_keep = int(n * args.init_perc)
@@ -404,25 +395,25 @@ if __name__ == '__main__':
             pca.components_
         )
         loads = torch.tensor(loads, dtype=torch.float64)
-        torch.save(loads.t(), init_path)
+        torch.save(loads.t(), path_init)
+    end = time.time()
+    write_rows_to_csv(other_bench_path, [['initialization', end - start]])
 
 
     # ---------- DISTRIBUTED RUN ---------- #
     print("Fitting model...")
     
-    shared_path = '/tmp/sharedfile'
-    if os.path.exists(shared_path):
-        os.remove(shared_path)
+    remove_file(config.path_shared)
     processes = []
     mp.set_start_method('spawn')
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, shared_path, DIR_COV, DIR_MODEL,
-                grid_shape, args.num_facs, init_path, args.alpha,
+                rank, args.world_size, config.path_shared, args.config, dir_out,
+                grid_shape, args.num_facs, args.alpha,
                 args.batch_size, args.lr, args.max_epochs, 
-                seeds[rank], run, args.backend
+                seeds[rank], run, config.backend
             )
         )
         p.start()
@@ -430,29 +421,4 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
-
-
-    # ---------- EVALUATION ---------- #
-        
-    # Plot loadings
-    path = os.path.join(DIR_MODEL, 'cov-model.pth')
-    final_model = LowRankCovariance(grid_shape, args.num_facs)
-    final_model.load_state_dict(torch.load(path))
-
-    for k in range(args.num_facs):
-        if len(grid_shape) == 1:
-            plot_line_for_1d_loads(final_model.loads.data, k)
-        elif len(grid_shape) == 2:
-            plot_heatmap_for_2d_loads(final_model.loads.data, k)
-        elif len(grid_shape) == 3:
-            plot_heatmap_for_3d_loads(final_model.loads.data, k, 5)
-        else:
-            print(f"`grid_shape` must have length <= 3!")
-
-    # Aggreagate benchmarking
-    if BENCHMARK:
-        aggregate_benchmarks(DIR_BENCH, 'process_epoch', args.world_size, 'mean')
-        aggregate_benchmarks(DIR_BENCH, 'compute_loss', args.world_size, 'mean')
-        aggregate_benchmarks(DIR_BENCH, 'dataset', args.world_size, 'mean')
-
 

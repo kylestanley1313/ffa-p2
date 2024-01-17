@@ -1,5 +1,6 @@
-import os
+import csv
 import math
+import os
 import shutil
 import torch
 from typing import Generator, List, Union
@@ -38,6 +39,18 @@ def refresh_directory(dir):
     if os.path.exists(dir):
         shutil.rmtree(dir)
     os.makedirs(dir)
+
+
+def remove_file(path):
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def write_rows_to_csv(path, rows):
+    mode = 'a' if os.path.exists(path) else 'w'
+    with open(path, mode, newline='') as file:
+        writer = csv.writer(file)
+        writer.writerows(rows)
 
 
 def multiply_list(list_: List[Union[int, float]]):

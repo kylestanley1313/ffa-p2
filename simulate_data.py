@@ -459,6 +459,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
+        '--config', type=str,
+        help="Configuration (i.e., mode) in which to run script."
+    )
+    parser.add_argument(
         '--dir',
         help="Dataset directory in which simulated data will be stored."
     )
@@ -481,10 +485,6 @@ if __name__ == '__main__':
     parser.add_argument(
         '--batch_size', type=int,
         help="Maximum number of samples per output file."
-    )
-    parser.add_argument(
-        '--config', type=str,
-        help="Configuration (i.e., mode) in which to run script."
     )
     parser.add_argument(
         '--seed', default=12345,

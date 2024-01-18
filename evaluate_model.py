@@ -15,23 +15,23 @@ from utils_plotting import (
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--out_dir', type=str)
+    parser.add_argument('--dir_out', type=str)
     parser.add_argument('--grid_shape', type=int, nargs='+')
     parser.add_argument('--plot', action='store_true')
     parser.add_argument('--benchmark', action='store_true')
     args = parser.parse_args()
 
     # Globals
-    out_dir = os.path.join('out', args.out_dir)
-    dir_bench = os.path.join(out_dir, 'bench')
+    dir_out = os.path.join('out', args.dir_out)
+    dir_bench = os.path.join(dir_out, 'bench')
 
     # Prepare the results directory
-    dir_res = os.path.join(out_dir, 'results')
+    dir_res = os.path.join(dir_out, 'results')
     refresh_directory(dir_res)
 
     if args.plot:
         
-        path_model = os.path.join(out_dir, 'cov-model.pth')
+        path_model = os.path.join(dir_out, 'cov-model.pth')
         loads = torch.load(path_model)['loads.weight'].data
         num_facs = loads.shape[-1]
         loads = loads.reshape(args.grid_shape + [num_facs])
@@ -46,9 +46,10 @@ if __name__ == '__main__':
                 path = os.path.join(dir_res, f'loads_k-{k}.png')
                 plot_heatmap_for_2d_loads(loads.data, k, path=path)
             elif ndim == 3:
-                z = 2  # TODO: Loop thru z's
-                path = os.path.join(dir_res, f'loads_k-{k}_z-{z}.png')
-                plot_heatmap_for_3d_loads(loads.data, k, z, path=path) 
+                for p in [0.25, 0.5, 0.75]:
+                    z = int(p * args.grid_shape[2])
+                    path = os.path.join(dir_res, f'loads_k-{k}_z-{z}.png')
+                    plot_heatmap_for_3d_loads(loads.data, k, z, path=path) 
             else:
                 print(f"`grid_shape` must have length <= 3!")
 

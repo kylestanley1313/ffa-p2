@@ -3,7 +3,8 @@ import math
 import os
 import shutil
 import torch
-from typing import Generator, List, Union
+import yaml
+from typing import Dict, Generator, List, Union
 
 
 
@@ -51,6 +52,17 @@ def write_rows_to_csv(path, rows):
     with open(path, mode, newline='') as file:
         writer = csv.writer(file)
         writer.writerows(rows)
+
+
+def load_yaml(path: str) -> Dict:
+    with open(path, 'r') as file:
+        data = yaml.safe_load(file)
+    return data
+
+
+def write_yaml(data: Dict, path: str) -> None:
+    with open(path, 'w') as file:
+        yaml.dump(data, file)
 
 
 def multiply_list(list_: List[Union[int, float]]):

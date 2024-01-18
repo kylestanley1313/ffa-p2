@@ -13,7 +13,7 @@ from torch.nn.functional import mse_loss
 from torch.utils.data import Dataset, Sampler
 from typing import Callable, List, Optional, Tuple
 
-from benchmarking import aggregate_benchmarks, size_dist_obj, time_dist_fcn
+from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils import (
     flatten_dataset,

@@ -1,0 +1,16 @@
+grid_shape: [
+  [5, 5, 5]
+]
+load_scheme: ['BumpScheme3D1']
+num_train: [100]
+num_val: [0]
+world_size: [5]
+estimation: ['strat', 'ddp']
+num_facs: [4]
+delta: [0.1]
+init_method: ['pca_randomized']
+init_perc: [1.0]
+batch_size: [16]
+lr: [0.1]
+max_epochs: [100]
+

@@ -402,15 +402,16 @@ if __name__ == '__main__':
 
     # ---------- DISTRIBUTED RUN ---------- #
     print("Fitting model...")
-    
-    remove_file(config.path_shared)
+
+    path_shared = os.path.join(config.dir_shared, f'shared_{args.dir_out}')
+    remove_file(path_shared)
     processes = []
     mp.set_start_method('spawn')
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, config.path_shared, args.config, dir_out,
+                rank, args.world_size, path_shared, args.config, dir_out,
                 grid_shape, args.num_facs, args.alpha,
                 args.batch_size, args.lr, args.max_epochs, 
                 seeds[rank], run, config.backend

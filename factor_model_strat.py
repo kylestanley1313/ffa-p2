@@ -261,7 +261,6 @@ def process_epoch(
         strat_seq = torch.randperm(num_strata, generator=gen, dtype=torch.int32)
     else:
         strat_seq = torch.zeros(num_strata, dtype=torch.int32)
-    dist.broadcast(strat_seq, 0)
 
     for s in strat_seq:  # > subepoch
         dataloader.set_stratum(s.item())
@@ -386,15 +385,16 @@ def run(
     broadcast_model(model, rank, 0)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    objective = partial(mse_loss, reduction='sum')
+    objective_mean = partial(mse_loss, reduction='mean')
+    objective_sum = partial(mse_loss, reduction='sum')
 
     for epoch in range(max_epochs):
 
         process_epoch_(
-            model, dataloader, objective, optimizer, 
+            model, dataloader, objective_mean, optimizer, 
             gen, num_strata, rank, world_size
         )
-        loss = compute_loss(model, dataloader, objective, rank, world_size)
+        loss = compute_loss(model, dataloader, objective_sum, rank, world_size)
         if rank == 0:
             print(f"epoch = {epoch} | loss = {loss}")
 
@@ -594,14 +594,15 @@ if __name__ == '__main__':
 
     # ---------- DISTRIBUTED RUN ---------- #
 
-    remove_file(config.path_shared)
+    path_shared = os.path.join(config.dir_shared, f'shared_{args.dir_out}')
+    remove_file(path_shared)
     processes = []
     mp.set_start_method('spawn')
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, config.path_shared, args.config, dir_out,
+                rank, args.world_size, path_shared, args.config, dir_out,
                 grid_shape, args.num_facs,
                 args.batch_size, args.lr, args.max_epochs,
                 seeds[rank], run, config.backend

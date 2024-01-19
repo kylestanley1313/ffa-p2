@@ -5,7 +5,7 @@ class Config(object):
 
     root = os.path.abspath(os.path.dirname(__file__))
     scratch_root = os.path.abspath(os.path.dirname(__file__))
-    path_shared = os.path.join(root, 'tmp', 'shared_file')
+    dir_shared = os.path.join(root, 'tmp')
     
     backend = 'gloo'
 

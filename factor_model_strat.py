@@ -594,7 +594,8 @@ if __name__ == '__main__':
 
     # ---------- DISTRIBUTED RUN ---------- #
 
-    path_shared = os.path.join(config.dir_shared, f'shared_{args.dir_out}')
+    suffix = args.dir_out.split('/')[-1]
+    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
     processes = []
     mp.set_start_method('spawn')

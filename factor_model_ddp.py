@@ -156,16 +156,47 @@ class BasicDataLoader(object):
 
 def process_epoch(model, dataloader, objective, optimizer):
 
+    bench = True if dist.get_rank() == 0 else False
+    time_model = 0
+    time_objective = 0
+    time_backward = 0
+    time_step = 0
+
     for points, cov in dataloader:
 
         # Forward pass
+        start = time.time()
         preds = model(points[:,0], points[:,1])
+        end = time.time()
+        time_model += end - start
+        start = time.time()
         loss = objective(preds, cov, model)
+        end = time.time()
+        time_objective += end - start
 
         # Backward pass
         optimizer.zero_grad()
+        start = time.time()
         loss.backward()
+        end = time.time()
+        time_backward += end - start
+        start = time.time()
         optimizer.step()
+        end = time.time()
+        time_step += end - start
+    
+    msg = (
+        f"""
+        Times: 
+            time_model = {time_model}
+            time_objective = {time_objective}
+            time_backward = {time_backward}
+            time_step = {time_step}
+        """
+    )
+    if bench: 
+        print(msg)
+
 
 
 def compute_loss(model, dataloader, objective, rank, world_size):
@@ -403,7 +434,8 @@ if __name__ == '__main__':
     # ---------- DISTRIBUTED RUN ---------- #
     print("Fitting model...")
 
-    path_shared = os.path.join(config.dir_shared, f'shared_{args.dir_out}')
+    suffix = args.dir_out.split('/')[-1]
+    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
     processes = []
     mp.set_start_method('spawn')

@@ -38,18 +38,9 @@ def roughness_penalty(loads: torch.Tensor, diff_mat: torch.Tensor):
 
 def objective(
         preds: torch.Tensor, 
-        cov: torch.Tensor, 
-        model: 'LowRankCovariance', 
-        alpha: float, 
-        diff_mat: torch.Tensor
+        cov: torch.Tensor
     ):
-    loads = list(model.parameters())[0]
-    err = mse_loss(preds, cov)
-    if alpha > 0:
-        pen = roughness_penalty(loads, diff_mat)
-        return err + alpha * pen
-    else: 
-        return err
+    return mse_loss(preds, cov)
 
 
 # -------------------- MODULES -------------------- #
@@ -170,7 +161,7 @@ def process_epoch(model, dataloader, objective, optimizer):
         end = time.time()
         time_model += end - start
         start = time.time()
-        loss = objective(preds, cov, model)
+        loss = objective(preds, cov)
         end = time.time()
         time_objective += end - start
 
@@ -204,7 +195,7 @@ def compute_loss(model, dataloader, objective, rank, world_size):
     # Compute and communicate loss
     dataset = dataloader.dataset
     preds = model(dataset.points[:,0], dataset.points[:,1])
-    loss = objective(preds, dataset.cov, model)
+    loss = objective(preds, dataset.cov)
     if rank > 0: 
         dist.send(loss, 0)
     else: 
@@ -288,12 +279,11 @@ def run(
 
     diff_mat = create_second_difference_matrix(grid_shape)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    objective_ = partial(objective, alpha=alpha, diff_mat=diff_mat)
 
     for epoch in range(max_epochs):
 
-        process_epoch_(model, dataloader, objective_, optimizer)
-        loss = compute_loss(model, dataloader, objective_, rank, world_size)
+        process_epoch_(model, dataloader, objective, optimizer)
+        loss = compute_loss(model, dataloader, objective, rank, world_size)
         if rank == 0:
             print(f"epoch = {epoch} | loss = {loss}")
 

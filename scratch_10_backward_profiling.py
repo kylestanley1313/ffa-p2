@@ -11,6 +11,7 @@ from functools import partial
 from sklearn.decomposition import PCA
 from torch.nn.functional import mse_loss
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.profiler import profile, record_function, ProfilerActivity
 from torch.utils.data import Dataset, Sampler
 from typing import Callable, List, Optional
 
@@ -153,28 +154,30 @@ def process_epoch(model, dataloader, objective, optimizer):
     time_backward = 0
     time_step = 0
 
-    for points, cov in dataloader:
+    with profile(activities=[ProfilerActivity.CPU]) as prof:
 
-        # Forward pass
-        start = time.time()
-        preds = model(points[:,0], points[:,1])
-        end = time.time()
-        time_model += end - start
-        start = time.time()
-        loss = objective(preds, cov)
-        end = time.time()
-        time_objective += end - start
+        for points, cov in dataloader:      
 
-        # Backward pass
-        optimizer.zero_grad()
-        start = time.time()
-        loss.backward()
-        end = time.time()
-        time_backward += end - start
-        start = time.time()
-        optimizer.step()
-        end = time.time()
-        time_step += end - start
+            # Forward pass
+            start = time.time()
+            preds = model(points[:,0], points[:,1])
+            end = time.time()
+            time_model += end - start
+            start = time.time()
+            loss = objective(preds, cov)
+            end = time.time()
+            time_objective += end - start
+
+            # Backward pass
+            optimizer.zero_grad()
+            start = time.time()
+            loss.backward()
+            end = time.time()
+            time_backward += end - start
+            start = time.time()
+            optimizer.step()
+            end = time.time()
+            time_step += end - start
     
     msg = (
         f"""
@@ -186,6 +189,7 @@ def process_epoch(model, dataloader, objective, optimizer):
         """
     )
     if bench: 
+        print(prof.key_averages().table(sort_by="self_cpu_time_total", row_limit=10))
         print(msg)
 
 

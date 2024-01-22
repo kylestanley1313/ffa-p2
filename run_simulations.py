@@ -9,7 +9,7 @@ from utils import load_yaml, refresh_directory
 
 
 
-def execute_script(path: str, flags: Dict[str, str]):
+def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
 
     # Compile arguments for subprocess.run()
     args = [sys.executable, path]
@@ -24,10 +24,9 @@ def execute_script(path: str, flags: Dict[str, str]):
 
     # Run script
     result = subprocess.run(args, capture_output=True, text=True)
-    if len(result.stderr) > 0:
+    if raise_error and len(result.stderr) > 0:
         raise Exception(f"Error: {result.stderr}")
-    else: 
-        print(result.stdout)
+    print(result.stdout)
     
 
 
@@ -36,6 +35,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
     parser.add_argument('--design', type=str)
+    parser.add_argument('--silent_fail', action='store_true')
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -99,7 +99,7 @@ if __name__ == '__main__':
             'lr': simulation['lr'],
             'max_epochs': simulation['max_epochs']
         }
-        execute_script(path, flags)
+        execute_script(path, flags, raise_error=(not args.silent_fail))
 
 
         # ------ EVALUATION ----- #

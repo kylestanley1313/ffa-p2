@@ -1,4 +1,4 @@
-name: ffa-p2-priv
+name: ffa-p2-priv-2
 channels:
   - pytorch
   - conda-forge

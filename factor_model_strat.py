@@ -294,6 +294,10 @@ def process_epoch(
             end = time.time()
             time_step += end - start
 
+        # Sync model
+        dist.barrier()
+        sync_model(rank, world_size, model, points)
+
     msg = (
         f"""
         Times: 
@@ -305,10 +309,6 @@ def process_epoch(
     )
     if bench: 
         print(msg)
-
-    # Sync model
-    dist.barrier()
-    sync_model(rank, world_size, model, points)
 
 
 def compute_loss(model, dataloader, objective, rank, world_size):

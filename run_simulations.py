@@ -90,7 +90,6 @@ if __name__ == '__main__':
 
         # ------ ESTIMATION ----- #
         path = os.path.join(config.root, f'factor_model_{simulation["estimation"]}.py')
-        # path = os.path.join(config.root, 'scratch_10_backward_profiling.py') # TODO: Remove after debugging!!!
         flags = {
             'config': args.config,
             'dataset': sim_id,

@@ -33,9 +33,6 @@ from utils import (
 
 # -------------------- UTILITIES -------------------- #
 
-def roughness_penalty(loads: torch.Tensor, diff_mat: torch.Tensor):
-    return torch.trace(loads.t() @ diff_mat @ loads)
-
 
 def objective(
         preds: torch.Tensor, 
@@ -218,7 +215,6 @@ def init_process(
         dir_out: str,
         grid_shape: List[int],
         num_facs: int, 
-        alpha: float,
         batch_size: int,
         lr: float, 
         max_epochs: int, 
@@ -232,7 +228,7 @@ def init_process(
     )
     fcn(
         rank, world_size, config, dir_out,
-        grid_shape, num_facs, alpha,
+        grid_shape, num_facs,
         batch_size, lr, max_epochs, seed
     )
 
@@ -244,7 +240,6 @@ def run(
         dir_out: str,
         grid_shape: List[int], 
         num_facs: int, 
-        alpha: float,
         batch_size: int,
         lr: float, 
         max_epochs: int, 
@@ -256,23 +251,8 @@ def run(
     
     # Set directories
     dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
-    dir_bench = os.path.join(dir_out, 'bench')
 
-    # Get benchmarking wrappers
-    process_epoch_ = time_dist_fcn(
-        fcn=process_epoch,
-        dir=dir_bench,
-        prefix='process_epoch',
-        benchmark=config.benchmark
-    )
-    Dataset_ = size_dist_obj(
-        init=DistributedCovarianceDataset,
-        dir=dir_bench,
-        prefix='dataset',
-        benchmark=config.benchmark
-    )
-
-    dataset = Dataset_(dir_cov, rank, world_size)
+    dataset = DistributedCovarianceDataset(dir_cov, rank, world_size)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
@@ -280,14 +260,12 @@ def run(
     path_init = os.path.join(dir_out, 'init_loads.pt')
     model = LowRankCovariance(num_vars, num_facs, path_init)
     model = DDP(model)
-
-    diff_mat = create_second_difference_matrix(grid_shape)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
 
     for epoch in range(max_epochs):
 
-        process_epoch_(model, dataloader, objective, optimizer)
-        loss = compute_loss(model, dataloader, objective, rank, world_size)
+        process_epoch(model, dataloader, mse_loss, optimizer)
+        loss = compute_loss(model, dataloader, mse_loss, rank, world_size)
         if rank == 0:
             print(f"epoch = {epoch} | loss = {loss}")
 
@@ -438,7 +416,7 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, path_shared, args.config, dir_out,
-                grid_shape, args.num_facs, args.alpha,
+                grid_shape, args.num_facs,
                 args.batch_size, args.lr, args.max_epochs, 
                 seeds[rank], run, config.backend
             )

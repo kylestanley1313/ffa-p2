@@ -134,26 +134,29 @@ class LowRankCovariance(nn.Module):
         ):
         super().__init__()
         self.num_facs = num_facs
-        self.loads = nn.Embedding(num_vars, num_facs, dtype=torch.float64)  # TODO: Custom initialization (SVD?)
         if path_init:
-            self.loads.weight.data = torch.load(path_init)
+            self.loads = torch.load(path_init)
+        else:
+            self.loads = torch.randn(num_vars, num_facs, dtype=torch.float64)
+        self.loads.requires_grad_()
+        self.loads = nn.Parameter(self.loads)
 
     def forward(self, idx0, idx1):
-        loads0 = self.loads(idx0)
-        loads1 = self.loads(idx1)
+        loads0 = self.loads[idx0]
+        loads1 = self.loads[idx1]
         return (loads0 * loads1).sum(dim=1)
     
     def get_loads(self, idx=None):
         if idx is None:
-            return self.loads.weight.data
+            return self.loads.data
         else:
-            return self.loads.weight.data[idx]
+            return self.loads.data[idx]
    
     def set_loads(self, loads, idx=None):
         if idx is None:
-            self.loads.weight.data = loads
+            self.loads.data = loads
         else:
-            self.loads.weight.data[idx] = loads
+            self.loads.data[idx] = loads
     
 
 
@@ -308,7 +311,8 @@ def process_epoch(
         """
     )
     if bench: 
-        print(msg)
+        pass
+        # print(msg)
 
 
 def compute_loss(model, dataloader, objective, rank, world_size):
@@ -578,7 +582,8 @@ if __name__ == '__main__':
             path_cov = os.path.join(dir_cov, f'cov-{r}.pt')
             torch.save(cov, path_cov)
     end = time.time()
-    write_rows_to_csv(other_bench_path, [['covariance', end - start]])
+    if config.benchmark:
+        write_rows_to_csv(other_bench_path, [['covariance', end - start]])
 
 
     # ---------- INITIALIZATION ---------- #
@@ -619,7 +624,8 @@ if __name__ == '__main__':
         loads = torch.tensor(loads, dtype=torch.float64)
         torch.save(loads.t(), path_init)
     end = time.time()
-    write_rows_to_csv(other_bench_path, [['initialization', end - start]])
+    if config.benchmark:
+        write_rows_to_csv(other_bench_path, [['initialization', end - start]])
 
 
     # ---------- DISTRIBUTED RUN ---------- #

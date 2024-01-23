@@ -198,7 +198,8 @@ def process_epoch(model, dataloader, objective, optimizer):
         """
     )
     if bench: 
-        print(msg)
+        pass
+        # print(msg)
 
 
 
@@ -304,7 +305,7 @@ def run(
     if rank == 0:
         path = os.path.join(dir_out, 'cov-model.pth')
         state_dict = model.state_dict()
-        # state_dict['loads.weight'] = state_dict.pop('module.loads.weight')  # Replace DDP key
+        state_dict['loads'] = state_dict.pop('module.loads')  # Replace DDP key
         torch.save(state_dict, path)
 
     dist.destroy_process_group()
@@ -390,7 +391,8 @@ if __name__ == '__main__':
         torch.save(cov, path_cov)
         iter += 1
     end = time.time()
-    write_rows_to_csv(other_bench_path, [['covariance', end - start]])
+    if config.benchmark:
+        write_rows_to_csv(other_bench_path, [['covariance', end - start]])
         
 
     # ---------- INITIALIZATION ---------- #
@@ -431,7 +433,8 @@ if __name__ == '__main__':
         loads = torch.tensor(loads, dtype=torch.float64)
         torch.save(loads.t(), path_init)
     end = time.time()
-    write_rows_to_csv(other_bench_path, [['initialization', end - start]])
+    if config.benchmark:
+        write_rows_to_csv(other_bench_path, [['initialization', end - start]])
 
 
     # ---------- DISTRIBUTED RUN ---------- #

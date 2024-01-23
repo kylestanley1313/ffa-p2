@@ -24,8 +24,12 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
 
     # Run script
     result = subprocess.run(args, capture_output=True, text=True)
-    if raise_error and len(result.stderr) > 0:
-        raise Exception(f"Error: {result.stderr}")
+    if len(result.stderr) > 0:
+        msg = f"Error: {result.stderr}"
+        if raise_error:
+            raise Exception(msg)
+        else:
+            print(msg)
     print(result.stdout)
     
 
@@ -39,6 +43,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     config = load_config(args.config)
+    raise_error = not args.silent_fail
 
     # Setup simulation files
     path = os.path.join(config.root, 'setup_simulations.py')
@@ -46,7 +51,7 @@ if __name__ == '__main__':
         'config': args.config,
         'design': args.design
     }
-    execute_script(path, flags)
+    execute_script(path, flags, raise_error)
 
     # Prepare output directories
     #   - setup_simulations.py prepares design directory
@@ -80,7 +85,7 @@ if __name__ == '__main__':
             'num_val': simulation['num_val'],
             'batch_size': int(simulation['num_train'] / 4)
         }
-        execute_script(path, flags)
+        execute_script(path, flags, raise_error)
 
 
         # ------ ESTIMATION ----- #
@@ -99,7 +104,7 @@ if __name__ == '__main__':
             'lr': simulation['lr'],
             'max_epochs': simulation['max_epochs']
         }
-        execute_script(path, flags, raise_error=(not args.silent_fail))
+        execute_script(path, flags, raise_error)
 
 
         # ------ EVALUATION ----- #
@@ -111,4 +116,4 @@ if __name__ == '__main__':
         }
         if config.benchmark:
             flags['benchmark'] = None
-        execute_script(path, flags)
+        execute_script(path, flags, raise_error)

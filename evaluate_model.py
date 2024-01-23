@@ -32,7 +32,7 @@ if __name__ == '__main__':
     if args.plot:
         
         path_model = os.path.join(dir_out, 'cov-model.pth')
-        loads = torch.load(path_model)['module.loads'].data
+        loads = torch.load(path_model)['loads'].data
         num_facs = loads.shape[-1]
         loads = loads.reshape(args.grid_shape + [num_facs])
         ndim = len(args.grid_shape)

@@ -64,13 +64,16 @@ class LowRankCovariance(nn.Module):
         ):
         super().__init__()
         self.num_facs = num_facs
-        self.loads = nn.Embedding(num_vars, num_facs, dtype=torch.float64)
         if path_init:
-            self.loads.weight.data = torch.load(path_init)
+            self.loads = torch.load(path_init)
+        else:
+            self.loads = torch.randn(num_vars, num_facs, dtype=torch.float64)
+        self.loads.requires_grad_()
+        self.loads = nn.Parameter(self.loads)
 
     def forward(self, idx0, idx1):
-        loads0 = self.loads(idx0)
-        loads1 = self.loads(idx1)
+        loads0 = self.loads[idx0]
+        loads1 = self.loads[idx1]
         return (loads0 * loads1).sum(dim=1)
 
 
@@ -301,7 +304,7 @@ def run(
     if rank == 0:
         path = os.path.join(dir_out, 'cov-model.pth')
         state_dict = model.state_dict()
-        state_dict['loads.weight'] = state_dict.pop('module.loads.weight')  # Replace DDP key
+        # state_dict['loads.weight'] = state_dict.pop('module.loads.weight')  # Replace DDP key
         torch.save(state_dict, path)
 
     dist.destroy_process_group()

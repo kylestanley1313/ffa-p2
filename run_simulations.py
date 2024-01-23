@@ -22,7 +22,7 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
             else:
                 args.append(str(v))
 
-    # Run script
+    # Run script, (optionally) raising an error if encountered
     result = subprocess.run(args, capture_output=True, text=True)
     if len(result.stderr) > 0:
         msg = f"Error: {result.stderr}"

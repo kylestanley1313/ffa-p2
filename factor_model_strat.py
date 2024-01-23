@@ -259,12 +259,6 @@ def process_epoch(
         world_size
     ):
 
-    bench = True if dist.get_rank() == 0 else False
-    time_model = 0
-    time_objective = 0
-    time_backward = 0
-    time_step = 0
-
     # Broadcast stratum sequence from rank 0
     if rank == 0:
         strat_seq = torch.randperm(num_strata, generator=gen, dtype=torch.int32)
@@ -277,42 +271,17 @@ def process_epoch(
         for points, cov in dataloader:
 
             # Forward pass
-            start = time.time()
             preds = model(points[:,0], points[:,1])
-            end = time.time()
-            time_model += end - start
-            start = time.time()
             loss = objective(preds, cov)
-            end = time.time()
-            time_objective += end - start
 
             # Backward pass
             optimizer.zero_grad()
-            start = time.time()
             loss.backward()
-            end = time.time()
-            time_backward += end - start
-            start = time.time()
             optimizer.step()
-            end = time.time()
-            time_step += end - start
 
         # Sync model
         dist.barrier()
         sync_model(rank, world_size, model, points)
-
-    msg = (
-        f"""
-        Times: 
-            time_model = {time_model}
-            time_objective = {time_objective}
-            time_backward = {time_backward}
-            time_step = {time_step}
-        """
-    )
-    if bench: 
-        pass
-        # print(msg)
 
 
 def compute_loss(model, dataloader, objective, rank, world_size):

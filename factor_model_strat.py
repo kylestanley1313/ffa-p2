@@ -1,21 +1,26 @@
 import argparse
 import numpy as np
 import os
-import sys
 import time
 import torch
-import torch.nn as nn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from functools import partial
 from sklearn.decomposition import PCA
 from torch.nn.functional import mse_loss
-from torch.utils.data import Dataset, Sampler
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Tuple
 
 from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
-from utils import (
+from utils.covariance import CovarianceComputer
+from utils.data import (
+    DistributedStratifiedCovarianceDataset,
+    DistributedStratifiedDatasetBatchSampler,
+    DistributedStratifiedDatasetSampler,
+    StratifiedDataLoader,
+    StratifiedTorchDataLoader
+)
+from utils.utils import (
     flatten_dataset,
     gen_points, 
     gen_seeds, 
@@ -25,142 +30,8 @@ from utils import (
     refresh_directory,
     write_rows_to_csv
 )
-
-
-# -------------------- MODULES -------------------- #
-
-class DistributedStratifiedCovarianceDataset(Dataset):
-
-    def __init__(self, dir: str, rank: int, world_size: int):
-
-        # Read in this rank's data
-        strat = torch.load(os.path.join(dir, f'stratum-{rank}.pt'))
-        points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
-        cov = torch.load(os.path.join(dir, f'cov-{rank}.pt'))
-
-        # Create dictionaries that map stratum to points/cov
-        num_strata = 2 * world_size + 1
-        self.points = None
-        self.cov = None
-        self.strat_points = {}
-        self.strat_cov = {}
-        for s in range(num_strata):
-            mask = strat == s
-            self.strat_points[s] = points[mask]
-            self.strat_cov[s] = cov[mask]
-
-    def __len__(self):
-        return len(self.cov)
-
-    def __getitem__(self, index):
-        return self.points[index], self.cov[index]
+from utils.model import LowRankCovariance
     
-    def set_stratum(self, stratum):
-        self.points = self.strat_points[stratum]
-        self.cov = self.strat_cov[stratum]
-
-    def set_all_strata(self):
-        self.points = torch.cat(list(self.strat_points.values()))
-        self.cov = torch.cat(list(self.strat_cov.values()))
-    
-    def storage(self):
-        """Returns size of dataset (in bytes)."""
-        self.set_all_strata()
-        points_sz = sys.getsizeof(self.points.untyped_storage())
-        cov_sz = sys.getsizeof(self.cov.untyped_storage())
-        return points_sz + cov_sz
-    
-
-class DistributedStratifiedDatasetSampler(Sampler):
-
-    def __init__(
-            self, 
-            dataset: DistributedStratifiedCovarianceDataset, 
-            gen: torch.Generator
-        ) -> None:
-        self.dataset = dataset
-        self.gen = gen
-
-    def __iter__(self):
-        idx = torch.randperm(len(self.dataset), generator=self.gen)
-        return iter(idx.tolist())
-    
-
-# NOTE: Should this inherit from DataLoader and implement a set_stratum method?
-class StratifiedDataLoader(object):
-
-    def __init__(
-            self, 
-            dataset: DistributedStratifiedCovarianceDataset, 
-            sampler: DistributedStratifiedDatasetSampler, 
-            batch_size: int
-        ) -> None:
-        self.dataset = dataset
-        self.sampler = sampler
-        self.batch_size = batch_size
-
-    def __iter__(self):
-        curr_batch = torch.zeros(self.batch_size, dtype=torch.int32)
-        cnt = 0
-        for idx in self.sampler:
-            curr_batch[cnt] = idx
-            cnt += 1
-            if cnt == self.batch_size:
-                yield self.dataset[curr_batch]
-                curr_batch = torch.zeros(self.batch_size, dtype=torch.int32)
-                cnt = 0
-
-        # Yield the last batch if it's not a complete batch
-        if cnt > 0:
-            yield self.dataset[curr_batch[:cnt]]
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def set_stratum(self, stratum):
-        self.dataset.set_stratum(stratum)
-
-    def set_all_strata(self):
-        self.dataset.set_all_strata()
-
-
-class LowRankCovariance(nn.Module):
-
-    def __init__(
-            self, 
-            num_vars: int, 
-            num_facs: int, 
-            path_init: Optional[str] = None
-        ):
-        super().__init__()
-        self.num_facs = num_facs
-        if path_init:
-            self.loads = torch.load(path_init)
-        else:
-            self.loads = torch.randn(num_vars, num_facs, dtype=torch.float64)
-        self.loads.requires_grad_()
-        self.loads = nn.Parameter(self.loads)
-
-    def forward(self, idx0, idx1):
-        loads0 = self.loads[idx0]
-        loads1 = self.loads[idx1]
-        return (loads0 * loads1).sum(dim=1)
-    
-    def get_loads(self, idx=None):
-        if idx is None:
-            return self.loads.data
-        else:
-            return self.loads.data[idx]
-   
-    def set_loads(self, loads, idx=None):
-        if idx is None:
-            self.loads.data = loads
-        else:
-            self.loads.data[idx] = loads
-    
-
-
-# -------------------- RUN -------------------- #
 
 def fair_allocate(num_items: int, num_groups: int) -> List[int]:
     """Evenly distributes num_items across num_groups."""
@@ -183,6 +54,19 @@ def gen_strata(nprocs: int) -> List[Tuple[Tuple]]:
         return strata
     else:
         raise Exception(f"Strata do not exist for {nprocs} processes.")
+
+
+def compute_covariance(
+        rank: int, 
+        world_size: int,  # For consistency with other distributed functions
+        config: str, 
+        dir_out: str
+    ) -> None:
+    config = load_config(config)
+    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
+    dir_data = os.path.join(config.scratch_root, dir_out, 'data')
+    cov_comp = CovarianceComputer(rank, dir_cov, dir_data)
+    cov_comp.compute()
 
 
 def sync_model(
@@ -264,6 +148,7 @@ def process_epoch(
         strat_seq = torch.randperm(num_strata, generator=gen, dtype=torch.int32)
     else:
         strat_seq = torch.zeros(num_strata, dtype=torch.int32)
+    dist.broadcast(strat_seq, 0)
 
     for s in strat_seq:  # > subepoch
         dataloader.set_stratum(s.item())
@@ -315,35 +200,24 @@ def compute_loss(model, dataloader, objective, rank, world_size):
         n = sum(n_list).item()
         loss = sum(loss_list).item()
         return loss / n
-    
 
+    
 def init_process(
         rank: int, 
         world_size: int, 
-        path_shared: str,
-        config: str, 
-        dir_out: str, 
-        grid_shape: List[str], 
-        num_facs: int, 
-        batch_size: int,
-        lr: float, 
-        max_epochs: int, 
-        seed: int, 
         fcn: Callable, 
-        backend: str
+        path_shared: str,
+        backend: str,
+        **kwargs
     ):
     dist.init_process_group(
         backend, init_method=f'file://{path_shared}',
         rank=rank, world_size=world_size
     )
-    fcn(
-        rank, world_size, config, dir_out, 
-        grid_shape, num_facs,  
-        batch_size, lr, max_epochs, seed
-    )
+    fcn(rank, world_size, **kwargs)
 
 
-def run(
+def train(
         rank: int, 
         world_size: int, 
         config: str,
@@ -357,6 +231,7 @@ def run(
     ) -> None:
 
     config = load_config(config)
+    torch.set_num_threads(1)
     gen = torch.Generator().manual_seed(seed)
     num_strata = 2 * world_size + 1
 
@@ -379,8 +254,10 @@ def run(
     )
 
     dataset = Dataset_(dir_cov, rank, world_size)
-    sampler = DistributedStratifiedDatasetSampler(dataset, gen)
-    dataloader = StratifiedDataLoader(dataset, sampler, batch_size=batch_size)
+    batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
+    dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
+    # sampler = DistributedStratifiedDatasetSampler(dataset, gen)
+    # dataloader = StratifiedDataLoader(dataset, sampler=sampler, batch_size=batch_size)
 
     num_vars = multiply_list(grid_shape)
     path_init = os.path.join(dir_out, 'init_loads.pt')
@@ -446,6 +323,8 @@ if __name__ == '__main__':
     path_init = os.path.join(dir_out, 'init_loads.pt')
     path_model = os.path.join(dir_out, 'cov-model.pth')
     other_bench_path = os.path.join(dir_bench, 'other.csv')
+    suffix = args.dir_out.split('/')[-1]
+    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
 
     # Delete files from various directories
     refresh_directory(dir_data)
@@ -458,6 +337,9 @@ if __name__ == '__main__':
     # Flatten dataset, getting `grid_shape` and `num_vars` along the way
     grid_shape = flatten_dataset(dir_dataset, dir_data)
     num_vars = multiply_list(grid_shape)
+
+    # Multiprocessing configurations
+    mp.set_start_method('spawn')
 
 
     # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
@@ -527,29 +409,25 @@ if __name__ == '__main__':
 
     # ---------- COVARIANCE PREPARATION ---------- #
     print("Computing covariance...")
-
-    # Compute covariance for each rank's points
-    # TODO: Parallelize
     start = time.time()
-    for r in range(args.world_size):
-        path_points = os.path.join(dir_cov, f'points-{r}.pt')
-        points = torch.load(path_points)
-        num_points = len(points)
-        t1 = torch.zeros(num_points, dtype=torch.float64)
-        t2 = torch.zeros(num_points, dtype=torch.float64)
-        t3 = torch.zeros(num_points, dtype=torch.float64)
-        n = 0
-        dataloader = read_tensors(dir_data, 'data')
-        for batch in dataloader: 
-            n += len(batch)
-            for i in range(num_points):
-                row, col = points[i, :]
-                t1[i] += torch.sum(batch[:,row] * batch[:,col])
-                t2[i] += torch.sum(batch[:,row])
-                t3[i] += torch.sum(batch[:,col])
-            cov = (t1 - t2 * t3 / n) / (n - 1)
-            path_cov = os.path.join(dir_cov, f'cov-{r}.pt')
-            torch.save(cov, path_cov)
+
+    remove_file(path_shared)
+    processes = []
+    for rank in range(args.world_size):
+        p = mp.Process(
+            target=init_process, 
+            args=(rank, args.world_size, compute_covariance, path_shared, config.backend),
+            kwargs={
+                'config': args.config,
+                'dir_out': dir_out
+            }
+        )
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+    
     end = time.time()
     if config.benchmark:
         write_rows_to_csv(other_bench_path, [['covariance', end - start]])
@@ -565,7 +443,7 @@ if __name__ == '__main__':
         'pca_randomized': 'randomized'
     }
     if args.init_method == 'random':
-        init_loads = torch.randn(num_vars, args.num_facs, generator=gen, dtype=torch.float64)
+        loads = torch.randn(args.num_facs, num_vars, generator=gen, dtype=torch.float64)
     else:
 
         # Read in (possibly subsampled) data
@@ -591,28 +469,33 @@ if __name__ == '__main__':
             pca.components_
         )
         loads = torch.tensor(loads, dtype=torch.float64)
-        torch.save(loads.t(), path_init)
+    torch.save(loads.t(), path_init)
     end = time.time()
     if config.benchmark:
         write_rows_to_csv(other_bench_path, [['initialization', end - start]])
 
 
     # ---------- DISTRIBUTED RUN ---------- #
+    print("Fitting model...")
 
     suffix = args.dir_out.split('/')[-1]
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
     processes = []
-    mp.set_start_method('spawn')
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 
-            args=(
-                rank, args.world_size, path_shared, args.config, dir_out,
-                grid_shape, args.num_facs,
-                args.batch_size, args.lr, args.max_epochs,
-                seeds[rank], run, config.backend
-            )
+            args=(rank, args.world_size, train, path_shared, config.backend),
+            kwargs={
+                'config': args.config,
+                'dir_out': dir_out,
+                'grid_shape': grid_shape,
+                'num_facs': args.num_facs,
+                'batch_size': args.batch_size,
+                'lr': args.lr,
+                'max_epochs': args.max_epochs,
+                'seed': seeds[rank]
+            }
         )
         p.start()
         processes.append(p)

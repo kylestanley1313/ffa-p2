@@ -16,7 +16,7 @@ from typing import Callable, List, Optional
 
 from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
-from utils import (
+from utils.utils import (
     create_second_difference_matrix, 
     flatten_dataset,
     gen_points, 
@@ -53,6 +53,7 @@ def objective(
 
 
 # -------------------- MODULES -------------------- #
+
 
 class LowRankCovariance(nn.Module):
 
@@ -157,6 +158,34 @@ class BasicDataLoader(object):
 # -------------------- RUN -------------------- #
 
 
+def compute_covariance(points_file: str, dir_cov: str, dir_data: str) -> None:
+    """For a dataset contained in `dir_data` and points contained in 
+    `points_file` of `dir_cov`, computes and saves covariances."""
+
+    # Compute covariance
+    points_path = os.path.join(dir_cov, points_file)
+    points = torch.load(points_path)
+    num_points = len(points)
+    t1 = torch.zeros(num_points, dtype=torch.float64)
+    t2 = torch.zeros(num_points, dtype=torch.float64)
+    t3 = torch.zeros(num_points, dtype=torch.float64)
+    n = 0
+    data_loader = read_tensors(dir_data, 'data')
+    for data_batch in data_loader: 
+        n += len(data_batch)
+        for i in range(num_points): 
+            row, col = points[i]
+            t1[i] += torch.sum(data_batch[:,row] * data_batch[:,col])
+            t2[i] += torch.sum(data_batch[:,row])
+            t3[i] += torch.sum(data_batch[:,col])
+    cov = (t1 - t2 * t3 / n) / (n - 1)
+
+    # Save covariance
+    cov_file = points_file.replace('points', 'cov')
+    cov_path = os.path.join(dir_cov, cov_file)
+    torch.save(cov, cov_path)
+
+
 def process_epoch(model, dataloader, objective, optimizer):
 
     for points, cov in dataloader:
@@ -229,6 +258,7 @@ def run(
     ) -> None:
 
     config = load_config(config)
+    torch.set_num_threads(1)
     gen = torch.Generator().manual_seed(seed)
     
     # Set directories
@@ -328,40 +358,36 @@ if __name__ == '__main__':
     grid_shape = flatten_dataset(dir_dataset, dir_data)
     num_vars = multiply_list(grid_shape)
 
+    # Multiprocessing configurations
+    mp.set_start_method('spawn')
 
-    # ---------- COVARIANCE PREPARATION ---------- $
+
+    # ---------- POINT GENERATION ---------- #
+    cov_batch_size = 2 * num_vars
+    points_loader = gen_points(grid_shape, args.delta, cov_batch_size)
+    iter = 0
+    for points in points_loader:
+        path = os.path.join(dir_cov, f'points-{iter}.pt')
+        torch.save(points, path)
+        iter += 1
+
+
+    # ---------- COVARIANCE PREPARATION ---------- #
     print(f"Computing covariance...")
 
-    # Generate points then compute covariance
     start = time.time()
-    cov_batch_size_per_proc = int((num_vars ** 2) / 18)  # TODO: Why? Better choice?
-    cov_batch_size = cov_batch_size_per_proc * args.world_size
-    points = gen_points(grid_shape, args.delta, cov_batch_size)
-    iter = 0
-    for points_batch in points: 
-        num_points = len(points_batch)
-        t1 = torch.zeros(num_points, dtype=torch.float64)
-        t2 = torch.zeros(num_points, dtype=torch.float64)
-        t3 = torch.zeros(num_points, dtype=torch.float64)
-        n = 0
-        data = read_tensors(dir_data, 'data')
-        for data_batch in data: 
-            n += len(data_batch)
-            for i in range(num_points): 
-                row, col = points_batch[i]
-                t1[i] += torch.sum(data_batch[:,row] * data_batch[:,col])
-                t2[i] += torch.sum(data_batch[:,row])
-                t3[i] += torch.sum(data_batch[:,col])
-        cov = (t1 - t2 * t3 / n) / (n - 1)
-        path_points = os.path.join(dir_cov, f'points-{iter}.pt')
-        path_cov = os.path.join(dir_cov, f'cov-{iter}.pt')
-        torch.save(points_batch, path_points)
-        torch.save(cov, path_cov)
-        iter += 1
+    points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
+    pool = mp.Pool(processes=args.world_size)
+    results = pool.map(
+        partial(compute_covariance, dir_cov=dir_cov, dir_data=dir_data), 
+        points_files
+    )
+    pool.close()
+    pool.join()
     end = time.time()
     if config.benchmark:
-        write_rows_to_csv(other_bench_path, [['covariance', end - start]])
-        
+        write_rows_to_csv(other_bench_path, [['covariance', end - start]]) 
+
 
     # ---------- INITIALIZATION ---------- #
     print("Initializing loadings...")
@@ -373,7 +399,7 @@ if __name__ == '__main__':
         'pca_randomized': 'randomized'
     }
     if args.init_method == 'random':
-        init_loads = torch.randn(num_vars, args.num_facs, generator=gen, dtype=torch.float64)
+        loads = torch.randn(args.num_facs, num_vars, generator=gen, dtype=torch.float64)
     else:
 
         # Read in (possibly subsampled) data
@@ -399,7 +425,7 @@ if __name__ == '__main__':
             pca.components_
         )
         loads = torch.tensor(loads, dtype=torch.float64)
-        torch.save(loads.t(), path_init)
+    torch.save(loads.t(), path_init)
     end = time.time()
     if config.benchmark:
         write_rows_to_csv(other_bench_path, [['initialization', end - start]])
@@ -412,7 +438,6 @@ if __name__ == '__main__':
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
     processes = []
-    mp.set_start_method('spawn')
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 

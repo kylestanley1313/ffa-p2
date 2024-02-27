@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import List
 
 from config import load_config
-from utils import refresh_directory, write_generated_tensor
+from utils.utils import refresh_directory, write_generated_tensor
 
 
 # ---------- UTILITIES ---------- #
@@ -487,7 +487,7 @@ if __name__ == '__main__':
         help="Maximum number of samples per output file."
     )
     parser.add_argument(
-        '--seed', default=12345,
+        '--seed', default=12345, type=int,
         help="Integer used to seed generator."
     )
     args = parser.parse_args()
@@ -530,7 +530,7 @@ if __name__ == '__main__':
     # ---------- ERROR PREP ---------- #
 
     # TODO: Error preparation
-    err_sd = 0.25
+    err_sd = 0.5
 
     # ---------- DATA SIMULATION ---------- #
 

@@ -5,7 +5,7 @@ import sys
 from typing import Dict
 
 from config import load_config
-from utils import load_yaml, refresh_directory
+from utils.utils import load_yaml, refresh_directory
 
 
 

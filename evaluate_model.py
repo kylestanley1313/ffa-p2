@@ -3,8 +3,8 @@ import os
 import torch
 
 from benchmarking import aggregate_benchmarks
-from utils import refresh_directory, write_rows_to_csv
-from utils_plotting import (
+from utils.utils import refresh_directory, write_rows_to_csv
+from utils.plotting import (
     plot_line_for_1d_loads,
     plot_heatmap_for_2d_loads,
     plot_heatmap_for_3d_loads

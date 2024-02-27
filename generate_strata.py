@@ -5,7 +5,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from typing import List, Tuple
 
-from utils import gen_seeds
+from utils.utils import gen_seeds
 
 # NOTE: (Ideas)
 #   - If finding non-symmetric strata is easy and symmetric strata are a subset

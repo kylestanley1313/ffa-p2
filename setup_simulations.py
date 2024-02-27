@@ -3,7 +3,7 @@ import itertools
 import os
 
 from config import load_config
-from utils import load_yaml, refresh_directory, write_yaml
+from utils.utils import load_yaml, refresh_directory, write_yaml
 
 
 if __name__ == '__main__':

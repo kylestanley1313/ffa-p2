@@ -25,23 +25,46 @@ __all__ = [
 
 class DistributedStratifiedCovarianceDataset(Dataset):
 
-    def __init__(self, dir: str, rank: int, world_size: int):
+    def __init__(
+            self, 
+            dir: str, 
+            rank: int, 
+            world_size: int, 
+            prop_train: float = 0.8, 
+            gen: torch.Generator = torch.Generator()
+        ) -> None:
 
         # Read in this rank's data
         strat = torch.load(os.path.join(dir, f'stratum-{rank}.pt'))
         points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
         cov = torch.load(os.path.join(dir, f'cov-{rank}.pt'))
 
-        # Create dictionaries that map stratum to points/cov
+        # Train-validation split
+        sz = len(cov)
+        num_train = int(prop_train * sz)
+        idx = torch.randperm(sz, generator=gen)
+        idx_train = idx[:num_train]
+        idx_val = idx[num_train:]
+
+        # Create dictionaries that map stratum to train points/cov
+        strat_train = strat[idx_train]
+        points_train = points[idx_train]
+        cov_train = cov[idx_train]
         num_strata = 2 * world_size + 1
-        self.points = None
-        self.cov = None
         self.strat_points = {}
         self.strat_cov = {}
         for s in range(num_strata):
-            mask = strat == s
-            self.strat_points[s] = points[mask]
-            self.strat_cov[s] = cov[mask]
+            mask = strat_train == s
+            self.strat_points[s] = points_train[mask]
+            self.strat_cov[s] = cov_train[mask]
+
+        # Create validation points/cov
+        self.points_val = points[idx_val]
+        self.cov_val = cov[idx_val]
+
+        # Placeholder attributes set by methods
+        self.points = None
+        self.cov = None
 
     def __len__(self):
         return len(self.cov)
@@ -53,6 +76,10 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         self.points = self.strat_points[stratum]
         self.cov = self.strat_cov[stratum]
 
+    def set_validation(self):
+        self.points = self.points_val
+        self.cov = self.cov_val
+
     def set_all_strata(self):
         self.points = torch.cat(list(self.strat_points.values()))
         self.cov = torch.cat(list(self.strat_cov.values()))
@@ -62,6 +89,9 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         self.set_all_strata()
         points_sz = sys.getsizeof(self.points.untyped_storage())
         cov_sz = sys.getsizeof(self.cov.untyped_storage())
+        self.set_validation()
+        points_sz += sys.getsizeof(self.points.untyped_storage())
+        cov_sz += sys.getsizeof(self.cov.untyped_storage())
         return points_sz + cov_sz
     
 
@@ -149,6 +179,9 @@ class StratifiedDataLoader(object):
     def set_all_strata(self):
         self.dataset.set_all_strata()
 
+    def set_validation(self):
+        self.dataset.set_validation()
+
     def _get_iterator(self):
         if self.sampler:
             return self._iterator_for_sampler
@@ -208,6 +241,9 @@ class StratifiedTorchDataLoader(DataLoader):
 
     def set_stratum(self, stratum):
         self.dataset.set_stratum(stratum)
+
+    def set_validation(self):
+        self.dataset.set_validation()
 
     def set_all_strata(self):
         self.dataset.set_all_strata()

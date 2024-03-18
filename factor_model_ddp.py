@@ -9,6 +9,8 @@ import torch.multiprocessing as mp
 import torch.nn as nn
 from functools import partial
 from sklearn.decomposition import PCA
+from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import allreduce_hook
+
 from torch.nn.functional import mse_loss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, Sampler
@@ -82,10 +84,21 @@ class LowRankCovariance(nn.Module):
 
 class DistributedCovarianceDataset(Dataset):
 
-    def __init__(self, dir: str, rank: int, world_size: int):
-        points_list = []
-        cov_list = []
+    def __init__(
+            self, 
+            dir: str, 
+            rank: int, 
+            world_size: int,
+            prop_train: float = 0.8,
+            gen: torch.Generator = torch.Generator()
+        ) -> None:
+
+        points_train_list = []
+        cov_train_list = []
+        points_valid_list = []
+        cov_valid_list = []
         self.rank_counts = {r: 0 for r in range(world_size)}
+
         all_points = read_tensors(dir, 'points')
         all_cov = read_tensors(dir, 'cov')
         iter = 0
@@ -93,19 +106,40 @@ class DistributedCovarianceDataset(Dataset):
 
             # Loop over ranks to aggregate counts
             for r in range(world_size):
+                
+                # Get all indices for rank
                 start = (r + iter) % world_size  # TODO: ensure even distribution of counts
                 idx = torch.arange(start, len(cov), world_size)
-                self.rank_counts[r] += len(idx)
+                
+                # Set rank count
+                sz = len(idx)
+                num_train = int(prop_train * sz)
+                self.rank_counts[r] += num_train
 
-                # Collect points/cov for rank assigned to this dataset
                 if r == rank:
-                    points_list.append(points[idx])
-                    cov_list.append(cov[idx])
+
+                    # Perform train-valid split
+                    idx_ = torch.randperm(sz, generator=gen)
+                    idx_train = idx[idx_[:num_train]]
+                    idx_valid = idx[idx_[num_train:]]
+                    
+                    # Collect points/cov for rank assigned to this dataset
+                    points_train_list.append(points[idx_train])
+                    cov_train_list.append(cov[idx_train])
+                    points_valid_list.append(points[idx_valid])
+                    cov_valid_list.append(cov[idx_valid])
 
             iter += 1
 
-        self.points = torch.row_stack(points_list)
-        self.cov = torch.cat(cov_list)
+        # Training and validation points/cov
+        self.points_train = torch.row_stack(points_train_list)
+        self.cov_train = torch.cat(cov_train_list)
+        self.points_valid = torch.row_stack(points_valid_list)
+        self.cov_valid = torch.cat(cov_valid_list)
+
+        # Placeholder attributes set by methods
+        self.points = None
+        self.cov = None
 
     def __len__(self):
         return len(self.cov)
@@ -113,10 +147,22 @@ class DistributedCovarianceDataset(Dataset):
     def __getitem__(self, index):
         return self.points[index], self.cov[index]
     
+    def set_training(self):
+        self.points = self.points_train
+        self.cov = self.cov_train
+
+    def set_validation(self):
+        self.points = self.points_valid
+        self.cov = self.cov_valid
+    
     def storage(self):
         """Returns size of dataset (in bytes)."""
+        self.set_training()
         points_sz = sys.getsizeof(self.points.untyped_storage())
         cov_sz = sys.getsizeof(self.cov.untyped_storage())
+        self.set_validation()
+        points_sz += sys.getsizeof(self.points.untyped_storage())
+        cov_sz += sys.getsizeof(self.cov.untyped_storage())
         return points_sz + cov_sz
     
 
@@ -155,6 +201,12 @@ class BasicDataLoader(object):
         # Yield the last batch if it's not a complete batch
         if cnt > 0:
             yield self.dataset[curr_batch[:cnt]]
+
+    def set_training(self):
+        self.dataset.set_training()
+
+    def set_validation(self):
+        self.dataset.set_validation()
 
     
 # -------------------- RUN -------------------- #
@@ -201,40 +253,43 @@ def process_epoch(model, dataloader, objective, optimizer):
         optimizer.step()
 
 
-def sparse_allreduce_hook(
-        process_group: dist.ProcessGroup, 
-        bucket: dist.GradBucket
-    ) -> torch.futures.Future[torch.Tensor]:
-    group_to_use = process_group if process_group is not None else dist.group.WORLD
+# def sparse_allreduce_hook(
+#         process_group: dist.ProcessGroup, 
+#         bucket: dist.GradBucket
+#     ) -> torch.futures.Future[torch.Tensor]:
+#     group_to_use = process_group if process_group is not None else dist.group.WORLD
 
-    sparse_tensor = bucket.buffer().to_sparse()
-    sparse_tensor.div_(group_to_use.size())
-    fut = dist.all_reduce(
-        sparse_tensor, group=group_to_use, async_op=True
-    ).get_future()
+#     indices = torch.nonzero(bucket.buffer()).t()
+#     values = bucket.buffer()[indices[0]]
+#     sparse_tensor = torch.sparse_coo_tensor(indices, values, bucket.buffer().size())
+#     # sparse_tensor = bucket.buffer().to_sparse()
+#     sparse_tensor.div_(group_to_use.size())
+#     fut = dist.all_reduce(  # TODO: Sparse reduction?
+#         sparse_tensor, group=group_to_use, async_op=True
+#     ).get_future()
 
-    def to_dense(fut):
-        return fut.value()[0].to_dense()
+#     def to_dense(fut):
+#         return fut.value()[0].to_dense()
     
-    return fut.then(to_dense)
+#     return fut.then(to_dense)
 
 
-def process_epoch_opt(model, dataloader, alpha, penalty_gradient, optimizer):
+# def process_epoch_opt(model, dataloader, alpha, penalty_gradient, optimizer):
 
-    for points, cov in dataloader:
+#     for points, cov in dataloader:
 
-        # Perform forward pass on loss
-        preds = model(points[:,0], points[:,1])
-        loss = mse_loss(preds, cov)
+#         # Perform forward pass on loss
+#         preds = model(points[:,0], points[:,1])
+#         loss = mse_loss(preds, cov)
 
-        # Perform backward pass on loss function, which will allreduce a 
-        # collection of sparse gradients. Then tack on the penalty gradient
-        # (dense but common to all workers) and perform update. 
-        optimizer.zero_grad()
-        loss.backward()
-        if alpha > 0:
-            model.module.loads.grad += alpha * penalty_gradient(model.module.loads.data)
-        optimizer.step()
+#         # Perform backward pass on loss function, which will allreduce a 
+#         # collection of sparse gradients. Then tack on the penalty gradient
+#         # (dense but common to all workers) and perform update. 
+#         optimizer.zero_grad()
+#         loss.backward()
+#         if alpha > 0:
+#             model.module.loads.grad += alpha * penalty_gradient(model.module.loads.data)
+#         optimizer.step()
 
 
 def compute_objective(model, dataloader, alpha, penalty, rank, world_size):
@@ -255,93 +310,100 @@ def compute_objective(model, dataloader, alpha, penalty, rank, world_size):
         return objective
     
     
-def train_opt(
-        rank: int, 
-        world_size: int, 
-        config: str,
-        dir_out: str,
-        grid_shape: List[int], 
-        num_facs: int, 
-        alpha: float,
-        batch_size: int,
-        lr: float, 
-        max_epochs: int, 
-        seed: int
-    ) -> None:
+# def train_opt(
+#         rank: int, 
+#         world_size: int, 
+#         config: str,
+#         dir_out: str,
+#         grid_shape: List[int], 
+#         num_facs: int, 
+#         alpha: float,
+#         batch_size: int,
+#         lr: float, 
+#         max_epochs: int, 
+#         seed: int
+#     ) -> None:
 
-    config = load_config(config)
-    torch.set_num_threads(1)
-    gen = torch.Generator().manual_seed(seed)
+#     config = load_config(config)
+#     torch.set_num_threads(1)
+#     gen = torch.Generator().manual_seed(seed)
     
-    # Set directories
-    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
-    dir_bench = os.path.join(dir_out, 'bench')
+#     # Set directories
+#     dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
+#     dir_bench = os.path.join(dir_out, 'bench')
 
-    # Get benchmarking wrappers
-    process_epoch_ = time_dist_fcn(
-        fcn=process_epoch_opt,
-        dir=dir_bench,
-        prefix='process_epoch',
-        benchmark=config.benchmark
-    )
-    Dataset_ = size_dist_obj(
-        init=DistributedCovarianceDataset,
-        dir=dir_bench,
-        prefix='dataset',
-        benchmark=config.benchmark
-    )
+#     # Get benchmarking wrappers
+#     process_epoch_ = time_dist_fcn(
+#         fcn=process_epoch_opt,
+#         dir=dir_bench,
+#         prefix='process_epoch',
+#         benchmark=config.benchmark
+#     )
+#     Dataset_ = size_dist_obj(
+#         init=DistributedCovarianceDataset,
+#         dir=dir_bench,
+#         prefix='dataset',
+#         benchmark=config.benchmark
+#     )
 
-    dataset = Dataset_(dir_cov, rank, world_size)
-    sampler = DistributedDatasetSampler(dataset, gen)
-    dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
+#     dataset = Dataset_(dir_cov, rank, world_size)
+#     sampler = DistributedDatasetSampler(dataset, gen)
+#     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
-    num_vars = multiply_list(grid_shape)
-    path_init = os.path.join(dir_out, 'init_loads.pt')
-    model = LowRankCovariance(num_vars, num_facs, path_init)
-    model = DDP(model)
-    model.register_comm_hook(state=None, hook=sparse_allreduce_hook)
+#     num_vars = multiply_list(grid_shape)
+#     path_init = os.path.join(dir_out, 'init_loads.pt')
+#     model = LowRankCovariance(num_vars, num_facs, path_init)
+#     model = DDP(model)
+#     model.register_comm_hook(state=None, hook=sparse_allreduce_hook)
 
-    diff_mat = create_second_difference_matrix(grid_shape)
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    penalty_ = partial(penalty, diff_mat=diff_mat)
-    penalty_gradient_ = partial(penalty_gradient, diff_mat=diff_mat)
+#     diff_mat = create_second_difference_matrix(grid_shape)
+#     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+#     penalty_ = partial(penalty, diff_mat=diff_mat)
+#     penalty_gradient_ = partial(penalty_gradient, diff_mat=diff_mat)
 
-    for epoch in range(max_epochs):
+#     for epoch in range(max_epochs):
 
-        process_epoch_(model, dataloader, alpha, penalty_gradient_, optimizer)
-        objective = compute_objective(
-            model, dataloader, alpha, penalty_, 
-            rank, world_size
-        )
-        if rank == 0:
-            print(f"epoch = {epoch} | objective = {objective}")
+#         process_epoch_(model, dataloader, alpha, penalty_gradient_, optimizer)
+#         objective = compute_objective(
+#             model, dataloader, alpha, penalty_, 
+#             rank, world_size
+#         )
+#         if rank == 0:
+#             print(f"epoch = {epoch} | objective = {objective}")
 
-    # Save model
-    if rank == 0:
-        path = os.path.join(dir_out, 'cov-model.pth')
-        state_dict = model.state_dict()
-        state_dict['loads'] = state_dict.pop('module.loads')  # Replace DDP key
-        torch.save(state_dict, path)
+#     # Save model
+#     if rank == 0:
+#         path = os.path.join(dir_out, 'cov-model.pth')
+#         state_dict = model.state_dict()
+#         state_dict['loads'] = state_dict.pop('module.loads')  # Replace DDP key
+#         torch.save(state_dict, path)
 
-    dist.destroy_process_group()
+#     dist.destroy_process_group()
 
 
 
 
 def compute_loss(model, dataloader, objective, rank, world_size):
 
-    # Compute and communicate loss
-    dataset = dataloader.dataset
-    preds = model(dataset.points[:,0], dataset.points[:,1])
-    loss = objective(preds, dataset.cov, model)
-    if rank > 0: 
-        dist.send(loss, 0)
-    else: 
-        for r in range(1, world_size):
-            worker_loss = torch.zeros(1, dtype=torch.float64)
-            dist.recv(worker_loss, r)
-            loss += worker_loss.item()
-        return loss
+    def compute_loss_(dataloader):
+        dataset = dataloader.dataset
+        preds = model(dataset.points[:,0], dataset.points[:,1])
+        loss = objective(preds, dataset.cov, model)
+        if rank > 0: 
+            dist.send(loss, 0)
+        else: 
+            for r in range(1, world_size):
+                worker_loss = torch.zeros(1, dtype=torch.float64)
+                dist.recv(worker_loss, r)
+                loss += worker_loss.item()
+            return loss
+
+    dataloader.set_training()
+    train_loss = compute_loss_(dataloader)
+    dataloader.set_validation()
+    valid_loss = compute_loss_(dataloader)
+
+    return train_loss, valid_loss
 
 
 def init_process(
@@ -353,8 +415,10 @@ def init_process(
         grid_shape: List[int],
         num_facs: int, 
         alpha: float,
+        train_prop: float,
         batch_size: int,
         lr: float, 
+        patience: int,
         max_epochs: int, 
         seed: int, 
         fcn: Callable, 
@@ -367,7 +431,7 @@ def init_process(
     fcn(
         rank, world_size, config, dir_out,
         grid_shape, num_facs, alpha,
-        batch_size, lr, max_epochs, seed
+        train_prop, batch_size, lr, patience, max_epochs, seed
     )
 
 
@@ -379,8 +443,10 @@ def train(
         grid_shape: List[int], 
         num_facs: int, 
         alpha: float,
+        train_prop: float,
         batch_size: int,
         lr: float, 
+        patience: int,
         max_epochs: int, 
         seed: int
     ) -> None:
@@ -407,7 +473,7 @@ def train(
         benchmark=config.benchmark
     )
 
-    dataset = Dataset_(dir_cov, rank, world_size)
+    dataset = Dataset_(dir_cov, rank, world_size, train_prop, gen)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
@@ -420,19 +486,43 @@ def train(
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     objective_ = partial(objective, alpha=alpha, diff_mat=diff_mat)
 
+    path_model = os.path.join(dir_out, 'cov-model.pth')
+    best_valid_loss = float('inf')
+    epochs_waited = 0
+    early_stop = torch.tensor(False)
+    prev_train_loss = float('inf')
+    lr = torch.tensor(lr)
     for epoch in range(max_epochs):
-
+        
+        dataloader.set_training()
         process_epoch_(model, dataloader, objective_, optimizer)
-        loss = compute_loss(model, dataloader, objective_, rank, world_size)
+        train_loss, valid_loss = compute_loss(model, dataloader, objective_, rank, world_size)
+        
+        # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
-            print(f"epoch = {epoch} | loss = {loss}")
+            print(f"epoch = {epoch} | train_loss = {train_loss} | valid_loss = {valid_loss}")
 
-    # Save model
-    if rank == 0:
-        path = os.path.join(dir_out, 'cov-model.pth')
-        state_dict = model.state_dict()
-        state_dict['loads'] = state_dict.pop('module.loads')  # Replace DDP key
-        torch.save(state_dict, path)
+            # Early stopping
+            if valid_loss < best_valid_loss:
+                best_valid_loss = valid_loss
+                torch.save(model.state_dict(), path_model)
+                epochs_waited = 0
+            else:
+                epochs_waited += 1
+                if epochs_waited >= patience: 
+                    print(f"Early stopping after {epoch + 1} epochs.")
+                    early_stop = torch.tensor(True)
+
+            # Update learning rate via bold driver
+            lr *= 1.05 if train_loss < prev_train_loss else 0.5
+
+        # Communicate early_stop and lr to non-zero ranks
+        dist.barrier()
+        dist.broadcast(early_stop, 0)
+        if early_stop:
+            break
+        dist.broadcast(lr, 0)
+        optimizer.param_groups[0]['lr'] = lr.item()
 
     dist.destroy_process_group()
 
@@ -451,11 +541,13 @@ if __name__ == '__main__':
         '--init_method', type=str, 
         choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
     )
-    parser.add_argument('--init_perc', type=float, default=1.0)
+    parser.add_argument('--init_prop', type=float, default=1.0)
+    parser.add_argument('--train_prop', type=float, default=0.8)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--seed', type=int, default=12345)
+    # parser.add_argument('--opt', action='store_true')
     args = parser.parse_args()
     
     config = load_config(args.config)
@@ -535,7 +627,7 @@ if __name__ == '__main__':
         dataloader = read_tensors(dir_data, 'data')
         for batch in dataloader:
             n = len(batch)
-            num_to_keep = int(n * args.init_perc)
+            num_to_keep = int(n * args.init_prop)
             idx = torch.randperm(n, generator=gen)
             data_ = batch[idx[:num_to_keep]]
             data.append(data_)
@@ -562,6 +654,11 @@ if __name__ == '__main__':
     # ---------- DISTRIBUTED RUN ---------- #
     print("Fitting model...")
 
+    # if args.opt: 
+    #     run_fcn = train_opt
+    # else: 
+    #     run_fcn = train
+
     suffix = args.dir_out.split('/')[-1]
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
@@ -572,8 +669,8 @@ if __name__ == '__main__':
             args=(
                 rank, args.world_size, path_shared, args.config, dir_out,
                 grid_shape, args.num_facs, args.alpha,
-                args.batch_size, args.lr, args.max_epochs, 
-                seeds[rank], train_opt, config.backend
+                args.train_prop, args.batch_size, args.lr, 5, args.max_epochs, 
+                seeds[rank], train, config.backend
             )
         )
         p.start()

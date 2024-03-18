@@ -171,35 +171,44 @@ def process_epoch(
 
 def compute_loss(model, dataloader, objective, rank, world_size):
 
-    # Compute rank-wise loss
-    dataloader.set_all_strata()  # give dataloader access to all a worker's points
-    loss = 0
-    n = len(dataloader)
-    for points, cov in dataloader:
-        preds = model(points[:,0], points[:,1])
-        loss += objective(preds, cov)
-    
-    # Send loss data when rank > 0
-    if rank != 0:
-        dist.send(torch.tensor([n], dtype=torch.int32), 0)
-        dist.send(torch.tensor([loss], dtype=torch.float64), 0)
-    
-    # Receive loss data when rank == 0
-    if rank == 0:
-        
-        # Collect losses
-        n_list = [torch.zeros(1, dtype=torch.int32) for _ in range(world_size)]
-        loss_list = [torch.zeros(1, dtype=torch.float64) for _ in range(world_size)]
-        n_list[0] = torch.tensor([n], dtype=torch.int32)
-        loss_list[0] = torch.tensor([loss], dtype=torch.float64)
-        for r in range(1, world_size):
-            dist.recv(n_list[r], r)
-            dist.recv(loss_list[r], r)
+    def compute_loss_(dataloader):
 
-        # Aggregate losses
-        n = sum(n_list).item()
-        loss = sum(loss_list).item()
-        return loss / n
+        # Compute rank-wise loss
+        loss = 0
+        n = len(dataloader)
+        for points, cov in dataloader:
+            preds = model(points[:,0], points[:,1])
+            loss += objective(preds, cov)
+        
+        # Send loss data when rank > 0
+        if rank != 0:
+            dist.send(torch.tensor([n], dtype=torch.int32), 0)
+            dist.send(torch.tensor([loss], dtype=torch.float64), 0)
+        
+        # Receive loss data when rank == 0
+        if rank == 0:
+            
+            # Collect losses
+            n_list = [torch.zeros(1, dtype=torch.int32) for _ in range(world_size)]
+            loss_list = [torch.zeros(1, dtype=torch.float64) for _ in range(world_size)]
+            n_list[0] = torch.tensor([n], dtype=torch.int32)
+            loss_list[0] = torch.tensor([loss], dtype=torch.float64)
+            for r in range(1, world_size):
+                dist.recv(n_list[r], r)
+                dist.recv(loss_list[r], r)
+
+            # Aggregate losses
+            n = sum(n_list).item()
+            loss = sum(loss_list).item()
+            return loss / n
+
+    # Compute rank-wise loss
+    dataloader.set_all_strata()
+    train_loss = compute_loss_(dataloader)
+    dataloader.set_validation()  
+    val_loss = compute_loss_(dataloader)
+
+    return train_loss, val_loss
 
     
 def init_process(
@@ -224,8 +233,10 @@ def train(
         dir_out: str,
         grid_shape: List[int], 
         num_facs: int, 
+        train_prop: float,
         batch_size: int,
         lr: float, 
+        patience: int,
         max_epochs: int, 
         seed: int
     ) -> None:
@@ -253,7 +264,7 @@ def train(
         benchmark=config.benchmark
     )
 
-    dataset = Dataset_(dir_cov, rank, world_size)
+    dataset = Dataset_(dir_cov, rank, world_size, train_prop, gen)
     batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
     dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
     # sampler = DistributedStratifiedDatasetSampler(dataset, gen)
@@ -268,21 +279,45 @@ def train(
     objective_mean = partial(mse_loss, reduction='mean')
     objective_sum = partial(mse_loss, reduction='sum')
 
+    path_model = os.path.join(dir_out, 'cov-model.pth')
+    best_val_loss = float('inf')
+    epochs_waited = 0
+    early_stop = torch.tensor(False)
+    prev_train_loss = float('inf')
+    lr = torch.tensor(lr)
     for epoch in range(max_epochs):
 
         process_epoch_(
             model, dataloader, objective_mean, optimizer, 
             gen, num_strata, rank, world_size
         )
-        loss = compute_loss(model, dataloader, objective_sum, rank, world_size)
+        train_loss, val_loss = compute_loss(model, dataloader, objective_sum, rank, world_size)
+        
+        # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
-            print(f"epoch = {epoch} | loss = {loss}")
+            print(f"epoch = {epoch + 1} | train_loss = {train_loss} | val_loss = {val_loss}")
 
-    # Save model
-    if rank == 0:
-        path = os.path.join(dir_out, 'cov-model.pth')
-        state_dict = model.state_dict()
-        torch.save(state_dict, path)
+            # Early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(model.state_dict(), path_model)
+                epochs_waited = 0
+            else:
+                epochs_waited += 1
+                if epochs_waited >= patience: 
+                    print(f"Early stopping after {epoch + 1} epochs.")
+                    early_stop = torch.tensor(True)
+
+            # Update learning rate via bold driver
+            lr *= 1.05 if train_loss < prev_train_loss else 0.5
+        
+        # Communicate early_stop and lr to non-zero ranks
+        dist.barrier()
+        dist.broadcast(early_stop, 0)
+        if early_stop:
+            break
+        dist.broadcast(lr, 0)
+        optimizer.param_groups[0]['lr'] = lr.item()
 
     dist.destroy_process_group()
 
@@ -301,7 +336,8 @@ if __name__ == '__main__':
         '--init_method', type=str, 
         choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
     )
-    parser.add_argument('--init_perc', type=float, default=1.0)
+    parser.add_argument('--init_prop', type=float, default=1)
+    parser.add_argument('--train_prop', type=float, default=0.8)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
@@ -451,7 +487,7 @@ if __name__ == '__main__':
         dataloader = read_tensors(dir_data, 'data')
         for batch in dataloader:
             n = len(batch)
-            num_to_keep = int(n * args.init_perc)
+            num_to_keep = int(n * args.init_prop)
             idx = torch.randperm(n, generator=gen)
             data_ = batch[idx[:num_to_keep]]
             data.append(data_)
@@ -491,8 +527,10 @@ if __name__ == '__main__':
                 'dir_out': dir_out,
                 'grid_shape': grid_shape,
                 'num_facs': args.num_facs,
+                'train_prop': args.train_prop,
                 'batch_size': args.batch_size,
                 'lr': args.lr,
+                'patience': 5,
                 'max_epochs': args.max_epochs,
                 'seed': seeds[rank]
             }

@@ -1,23 +1,105 @@
 import argparse
 import os
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from typing import Callable, List
+from functools import partial
+from typing import Callable, List, Tuple
 
 from config import load_config
 from utils.utils import (
     flatten_dataset, 
     gen_points,
-    gen_seeds, 
     multiply_list, 
+    read_tensors,
     refresh_directory,
-    remove_file
+    remove_file,
+    write_rows_to_csv
 )
 
 
-def allocate_points_strat():
-    pass
+def fair_allocate(num_items: int, num_groups: int) -> List[int]:
+    """Evenly distributes num_items across num_groups."""
+    out = [num_items // num_groups] * num_groups
+    remainder = num_items % num_groups
+    out[0:remainder] = [x + 1 for x in out[0:remainder]]
+    return out
+
+
+def gen_strata(nprocs: int) -> List[Tuple[Tuple]]:
+    path = os.path.join('strata', f'nprocs-{nprocs}.pt')
+    if os.path.exists(path):
+        tensor = torch.load(path)
+        num_strata = 2 * nprocs + 1
+        strata = [None] * num_strata
+        for s in range(num_strata):
+            mask = tensor[:,0] == s
+            stratum = tuple(tuple(s_) for s_ in tensor[mask, 1:].tolist())
+            strata[s] = stratum
+        return strata
+    else:
+        raise Exception(f"Strata do not exist for {nprocs} processes.")
+    
+
+def allocate_points_strat(
+        rank: int,
+        world_size: int,
+        grid_shape: List[int], 
+        delta: float, 
+        dir_cov: str,
+        seed: int,
+    ) -> None:
+    """Generates and writes the files of the form points-{rank}-{n_batch}.pt 
+    and strat-{rank}-{n_batch}.pt."""    
+    gen = torch.Generator().manual_seed(seed)
+
+    # Create dict mapping this rank's blocks to their stratum
+    block_map = {}
+    strata = gen_strata(world_size)
+    for i in range(len(strata)):
+        block_map[strata[i][rank]] = i
+
+    # Segment variables
+    num_vars = multiply_list(grid_shape)
+    seg_cnts = fair_allocate(num_vars, 2*world_size)
+    idx = 0
+    segs = torch.zeros(num_vars, dtype=torch.int32)
+    for seg, cnt in enumerate(seg_cnts):
+        segs[idx:(idx+cnt)] = torch.ones(cnt) * seg
+        idx += cnt
+    segs = segs[torch.randperm(num_vars, generator=gen)]
+
+    # Create points and strat files for this rank
+    points_loader = gen_points(grid_shape, delta, 2*num_vars)
+    n_batch = 0
+    for points in points_loader:
+
+        # Get the segment of each point
+        sz = len(points)
+        seg0 = segs[points[:,0]]
+        seg1 = segs[points[:,1]]
+
+        # Use strat to exclude points not assigned to rank (-1) and collect
+        # strata of those assigned to rank (>= 0). 
+        strat = -1 * torch.ones(sz, dtype=torch.int32)
+        for i in range(sz):
+            block = tuple(sorted(
+                [seg0[i].item(), seg1[i].item()], 
+                reverse=True
+            ))
+            strat_ = block_map.get(block)
+            if strat_ is not None:
+                strat[i] = strat_
+        mask = strat != -1
+
+        # Write points and strat to file
+        path_points = os.path.join(dir_cov, f'points-{rank}-{n_batch}.pt')
+        path_strat = os.path.join(dir_cov, f'strat-{rank}-{n_batch}.pt')
+        torch.save(points[mask], path_points)
+        torch.save(strat[mask], path_strat)
+
+        n_batch += 1
 
 
 def allocate_points_ddp(
@@ -25,54 +107,90 @@ def allocate_points_ddp(
         world_size: int,
         grid_shape: List[int], 
         delta: float, 
-        prop_train: float,
         dir_cov: str,
-        seed: int = 12345
+        seed: int,
     ) -> None:
-    gen = torch.Generator().manual_seed(seed)
-    gen_rank = torch.Generator().manaul_seed(seed + rank)
+    """Generates and writes files of the form points-{rank}-{n_batch}.pt."""
 
+    gen = torch.Generator().manual_seed(seed)
     num_vars = multiply_list(grid_shape)
     points_loader = gen_points(grid_shape, delta, 2*num_vars)
     
-    iter = 0
-    points_train = []
-    points_valid = []
+    n_batch = 0
     for points in points_loader: 
 
         # Get rank's indices using generator common to all ranks
-        start = (iter + rank) % world_size
+        start = (n_batch + rank) % world_size
         idx = torch.arange(start, len(points), world_size)
         idx = torch.randperm(len(points), generator=gen)[idx]
 
-        # Perform train-valid split using generator unique to this rank
-        sz = len(idx)
-        num_train = int(prop_train * sz)
-        idx_ = torch.randperm(sz, generator=gen_rank)
-        idx_train = idx[idx_[:num_train]]
-        idx_valid = idx[idx_[num_train:]]
+        # Write points to file
+        path = os.path.join(dir_cov, f'points-{rank}-{n_batch}.pt')
+        torch.save(points[idx], path)
 
-        # Collect points
-        points_train.append(points[idx_train])
-        points_valid.append(points[idx_valid])
-
-        iter += 1
-    
-    points_train = torch.row_stack(points_train)
-    points_valid = torch.row_stack(points_valid)
-
-    path_train = os.path.join(dir_cov, f'points-{rank}-train.pt')
-    path_valid = os.path.join(dir_cov, f'points-{rank}-valid.pt')
-    torch.save(points_train, path_train)
-    torch.save(points_valid, path_valid)
+        n_batch += 1
 
 
-def stratify_points():
-    pass
+def compute_covariance(
+        points_file: str,
+        train_prop: float,
+        seed: int,
+        dir_cov: str,
+        dir_data: str
+    ) -> None:
+    """For a dataset contained in `dir_data` and points contained in 
+    `points_file` of `dir_cov`, computes and saves training and validation 
+    covariances."""
 
+    gen = torch.Generator().manual_seed(seed)
 
-def compute_covariance():
-    pass
+    # Read in points
+    path = os.path.join(dir_cov, points_file)
+    points = torch.load(path)
+
+    # Compute covariance
+    num_points = len(points)
+    t1_train = torch.zeros(num_points, dtype=torch.float64)
+    t2_train = torch.zeros(num_points, dtype=torch.float64)
+    t3_train = torch.zeros(num_points, dtype=torch.float64)
+    t1_valid = torch.zeros(num_points, dtype=torch.float64)
+    t2_valid = torch.zeros(num_points, dtype=torch.float64)
+    t3_valid = torch.zeros(num_points, dtype=torch.float64)
+    n_train = 0
+    n_valid = 0
+    data_loader = read_tensors(dir_data, 'data')
+    for data in data_loader: 
+
+        # Perform train-valid split
+        sz = len(data)
+        num_train = int(train_prop * sz)
+        idx = torch.randperm(sz, generator=gen)
+        data_train = data[idx[:num_train]]
+        data_valid = data[idx[num_train:]]
+
+        n_train += len(data_train)
+        n_valid += len(data_valid)
+        for i in range(num_points): 
+            row, col = points[i]
+
+            t1_train[i] += torch.sum(data_train[:,row] * data_train[:,col])
+            t2_train[i] += torch.sum(data_train[:,row])
+            t3_train[i] += torch.sum(data_train[:,col])
+
+            t1_valid[i] += torch.sum(data_valid[:,row] * data_valid[:,col])
+            t2_valid[i] += torch.sum(data_valid[:,row])
+            t3_valid[i] += torch.sum(data_valid[:,col])
+
+    cov_train = (t1_train - t2_train * t3_train / n_train) / (n_train - 1)
+    cov_valid = (t1_valid - t2_valid * t3_valid / n_valid) / (n_valid - 1)
+
+    # Save covariances
+    cov_file = points_file.replace('points', 'cov-train')
+    cov_path = os.path.join(dir_cov, cov_file)
+    torch.save(cov_train, cov_path)
+    cov_file = points_file.replace('points', 'cov-valid')
+    cov_path = os.path.join(dir_cov, cov_file)
+    torch.save(cov_valid, cov_path)
 
 
 def init_process(
@@ -97,17 +215,20 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str)
     parser.add_argument('--est_method', type=str, choices=['strat', 'ddp'])
     parser.add_argument('--dir_out', type=str)
-    parser.add_argument('--world_size', type=int)
+    parser.add_argument(
+        '--world_size_est', type=int, 
+        help="Number of workers used in downstream estimation."
+    )
+    parser.add_argument(
+        '--world_size_cov', type=int, 
+        help="Number of workers used in this script's covariance computation."
+    )
     parser.add_argument('--delta', type=float)
     parser.add_argument('--train_prop', type=float, default=0.8)
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
 
     config = load_config(args.config)
-
-    # Configure globals
-    gen = torch.Generator().manual_seed(args.seed)
-    seeds = gen_seeds(gen, args.world_size)
 
     # Set directories and paths
     dir_dataset = os.path.join(config.scratch_root, 'datasets', args.dataset)
@@ -127,45 +248,73 @@ if __name__ == '__main__':
 
     # Flatten dataset, getting `grid_shape` and `num_vars` along the way
     grid_shape = flatten_dataset(dir_dataset, dir_data)
-    # num_vars = multiply_list(grid_shape)
 
     # Multiprocessing configurations
     mp.set_start_method('spawn')
 
     # ---------- POINT ALLOCATION ---------- #
-    if args.est_method == 'strat':
-        pass
-        # out: points_rank_train, points_rank_val, strat_rank_train
+    allocate_points_fcns = {
+        'strat': allocate_points_strat,
+        'ddp': allocate_points_ddp
+    }
+    remove_file(path_shared)
+    processes = []
+    for rank in range(args.world_size_est):
+        p = mp.Process(
+            target=init_process,
+            args=(
+                rank, args.world_size_est, allocate_points_fcns[args.est_method], 
+                path_shared, config.backend
+            ),
+            kwargs={
+                'grid_shape': grid_shape,
+                'delta': args.delta,
+                'dir_cov': dir_cov,
+                'seed': args.seed,  # use same seed for all ranks
+            }
+        )
+        p.start()
+        processes.append(p)
     
-    elif args.est_method == 'ddp':
-
-        remove_file(path_shared)
-        processes = []
-        for rank in range(args.world_size):
-            p = mp.Process(
-                target=init_process,
-                args=(
-                    rank, args.world_size, allocate_points_ddp, 
-                    path_shared, config.backend
-                ),
-                kwargs={
-                    'grid_shape': grid_shape,
-                    'delta': args.delta,
-                    'dir_cov': dir_cov,
-                    'seed': args.seed  # same seed for each rank
-                }
-            )
-            p.start()
-            processes.append(p)
-        
-        for p in processes:
-            p.join()
+    for p in processes:
+        p.join()
 
 
+    # ---------- COVARIANCE COMPUTATION ---------- #
+    print(f"Computing covariance...")
 
-        # out: points_rank_train and points_rank_val
+    start = time.time()
+    points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
+    pool = mp.Pool(processes=args.world_size_cov)
+    results = pool.map(
+        partial(
+            compute_covariance, 
+            train_prop=args.train_prop, seed=args.seed,
+            dir_cov=dir_cov, dir_data=dir_data
+        ), 
+        points_files
+    )
+    pool.close()
+    pool.join()
+    end = time.time()
+    if config.benchmark:
+        write_rows_to_csv(other_bench_path, [['covariance', end - start]]) 
 
-    else: 
-        raise Exception("Invalid argument passed to `est_method`!")
 
+    # ---------- MERGE FILES ---------- #
 
+    file_types = ['points', 'cov-train', 'cov-valid']
+    if args.est_method == 'strat':
+        file_types.append('strat')
+    for rank in range(args.world_size_est):
+        for file_type in file_types:
+            files_to_merge = [f for f in os.listdir(dir_cov) if f.startswith(f'{file_type}-{rank}')]
+            tensor_list = []
+            for f in files_to_merge:
+                path = os.path.join(dir_cov, f)
+                tensor_list.append(torch.load(path))
+                remove_file(path)
+            tensor = torch.cat(tensor_list)
+            path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
+            torch.save(tensor, path)
+            

@@ -4,7 +4,7 @@ import math
 import shutil
 import torch
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Union
 
 from config import load_config
 from utils.utils import refresh_directory, write_generated_tensor
@@ -12,22 +12,24 @@ from utils.utils import refresh_directory, write_generated_tensor
 
 # ---------- UTILITIES ---------- #
 
-def op_facs_loads(loads: torch.Tensor, facs: torch.Tensor, ndim: int) -> torch.Tensor:
-    """Performs the operation `sum_k(facs[k]*loads[k])."""
+def nsamp_basis_comb(basis: Union[torch.Tensor], coeffs: torch.Tensor, ndim: int) -> torch.Tensor:
+    """Performs the operation `sum_k(facs[k]*loads[k])`."""
     if ndim == 1:
-        return torch.einsum('nk,ka->na', facs, loads)
+        coeffs = coeffs.unsqueeze(2)
     elif ndim == 2:
-        return torch.einsum('nk,kab->nab', facs, loads)
+        coeffs = coeffs.unsqueeze(2).unsqueeze(3)
     elif ndim == 3:
-        return torch.einsum('nk,kabc->nabc', facs, loads)
+        coeffs = coeffs.unsqueeze(2).unsqueeze(3).unsqueeze(4)
     else: 
         raise NotImplementedError 
+    return (coeffs * basis).sum(dim=1).to_dense()
     
 
 class SineFunction1D(object):
 
+    ndim = 1
+
     def __init__(self, period=1) -> None:
-        self.ndim = 1
         self.period = period
 
     def __call__(self, points: torch.Tensor):
@@ -36,15 +38,19 @@ class SineFunction1D(object):
 
 class CosineFunction1D(object):
 
+    ndim = 1
+
     def __init__(self, period=1) -> None:
-        self.ndim = 1
         self.period = period
 
     def __call__(self, points: torch.Tensor):
         return torch.cos(points * 2 * torch.pi / self.period)
 
+# TODO: How to handle scalar inputs to Functions? Make everything List[Any]?
 
 class BumpFunction1D(object):
+
+    ndim = 1
 
     def __init__(
             self, 
@@ -52,7 +58,6 @@ class BumpFunction1D(object):
             scale: float,
             max: float,
         ) -> None:
-        self.ndim = 1
         self.center = center
         self.scale = scale
         self.max = max
@@ -61,8 +66,8 @@ class BumpFunction1D(object):
         
         # Center then scale points about origin
         points = points.clone()
-        points -= self.center
-        points /= self.scale
+        points -= torch.tensor(self.center)
+        points /= torch.tensor(self.scale)
 
         # Evaluate transformed points
         vals = torch.zeros_like(points, dtype=torch.float64)
@@ -73,6 +78,8 @@ class BumpFunction1D(object):
 
 class BumpFunction2D(object):
 
+    ndim = 2
+
     def __init__(
             self, 
             center: List[float],
@@ -80,7 +87,6 @@ class BumpFunction2D(object):
             scale: List[float],
             max: float
         ) -> None:
-        self.ndim = 2
         self.center = center
         self.max = max
 
@@ -97,7 +103,7 @@ class BumpFunction2D(object):
             [0, scale[1]]
         ], dtype=torch.float64)
 
-    def __call__(self, points: torch.Tensor):
+    def __call__(self, points: torch.Tensor) -> torch.Tensor:
 
         # Center, then rotate and scale about origin
         points = points.clone()
@@ -109,10 +115,13 @@ class BumpFunction2D(object):
         r = torch.sqrt(torch.sum(points ** 2, dim=1))
         idx = torch.abs(r) <= 1
         vals[idx] = torch.exp(-1 / (1 - r[idx] ** 2))
-        return self.max * math.exp(1) * vals
+        out = self.max * math.exp(1) * vals
+        return out
     
 
 class BumpFunction3D(object):
+
+    ndim = 3
 
     def __init__(
             self, 
@@ -168,12 +177,13 @@ class BumpFunction3D(object):
 
 
 # ---------- LOADING FUNCTIONS ---------- #
-# NOTE: All loading functions are defined on [0,1]^D
+# NOTE: All loading functions are defined on [0,1]^D and scaled to unit norm.
     
 class LoadingFunction(ABC):
     """Base class for LoadingFunctions which build a loading function of 
     dimension `ndim` from `pieces`. When called, a LoadingFunction realizes
-    itself on some grid defined by `points`."""
+    itself on some grid defined by `points`. Output function will have unit
+    norm."""
 
     def __init__(self):
         if not self._compatible_pieces():
@@ -183,7 +193,7 @@ class LoadingFunction(ABC):
         vals = torch.zeros(len(points), dtype=torch.float64)
         for piece in self.pieces:
             vals += piece(points)
-        return vals
+        return vals / torch.norm(vals)
     
     @property
     @abstractmethod
@@ -303,7 +313,6 @@ class CornerPairLoading3D4(LoadingFunction):
     ]
 
 
-
 # ---------- LOADING SCHEMES ---------- #
     
 class LoadingScheme(ABC):
@@ -350,46 +359,46 @@ class LoadingScheme(ABC):
         return all(d == self.ndim for d in ndims)
     
 
-class TrigScheme1D1(LoadingScheme):
+class TrigLoadingScheme1D1(LoadingScheme):
 
     ndim = 1
     loading_fcns = [
         SineLoading1D, 
         CosineLoading1D
     ]
-    scales = [1, 1]
+    scales = [2, 1]
 
 
-class BumpScheme1D1(LoadingScheme):
+class BumpLoadingScheme1D1(LoadingScheme):
 
     ndim = 1
     loading_fcns = [
         BumpPairLoading1D1, 
         BumpPairLoading1D2
     ]
-    scales = [1, 1]
+    scales = [2, 1]
 
 
-class BumpScheme2D1(LoadingScheme):
+class BumpLoadingScheme2D1(LoadingScheme):
 
     ndim = 2
     loading_fcns = [
         CornerPairLoading2D1, 
         CornerPairLoading2D2
     ]
-    scales = [1, 1]
+    scales = [2, 1]
 
-class BumpScheme2D2(LoadingScheme):
+class BumpLoadingScheme2D2(LoadingScheme):
 
     ndim = 2
     loading_fcns = [
         CornerPairLoading2D3,
         CornerPairLoading2D4
     ]
-    scales = [1, 1]
+    scales = [2, 1]
         
 
-class BumpScheme3D1(LoadingScheme):
+class BumpLoadingScheme3D1(LoadingScheme):
 
     ndim = 3
     loading_fcns = [
@@ -398,16 +407,161 @@ class BumpScheme3D1(LoadingScheme):
         CornerPairLoading3D3,
         CornerPairLoading3D4
     ]
-    scales = [1, 1, 1, 1]
+    scales = [2, 2, 2, 2]
 
 
 LOADING_SCHEMES = {
-    'TrigScheme1D1': TrigScheme1D1,
-    'BumpScheme1D1': BumpScheme1D1,
-    'BumpScheme2D1': BumpScheme2D1,
-    'BumpScheme2D2': BumpScheme2D2,
-    'BumpScheme3D1': BumpScheme3D1,
+    'TrigScheme1D1': TrigLoadingScheme1D1,
+    'BumpScheme1D1': BumpLoadingScheme1D1,
+    'BumpScheme2D1': BumpLoadingScheme2D1,
+    'BumpScheme2D2': BumpLoadingScheme2D2,
+    'BumpScheme3D1': BumpLoadingScheme3D1,
 }
+
+
+# ---------- ERROR FUNCTIONS ---------- #
+# NOTE: All error functions are defined on [0,1]^D and scaled to unit norm.
+
+class ErrorFunction(ABC):
+    """Base class for ErrorFunctions which build an error function of 
+    dimension `ndim`. On instantiation, ErrorFunctions instantiate some
+    `fcn` which is then evaluated then normalized within the class' __call__
+    method."""
+
+    def __call__(self, points: torch.Tensor) -> torch.Tensor:
+        out = self.fcn(points)
+        return out / torch.norm(out)
+
+
+class BumpErrorFunction1D1(ErrorFunction):
+
+    ndim = 1
+
+    def __init__(self, center: float) -> None:
+        self.fcn = BumpFunction1D(center, 0.05, 1)
+
+
+class BumpErrorFunction2D1(ErrorFunction):
+
+    ndim = 2
+
+    def __init__(self, center: List[float]) -> None:
+        self.fcn = BumpFunction2D(center, 0, [0.05, 0.05], 1)
+
+
+class BumpErrorFunction3D1(ErrorFunction):
+
+    ndim = 3
+
+    def __init__(self, center: List[float]) -> None:
+        self.fcn = BumpFunction3D(center, [0, 0, 0], [0.05, 0.05, 0.05], 1)
+
+
+# ---------- ERROR SCHEMES ---------- #
+
+class ErrorScheme(ABC):
+
+    def __init__(self, gen: torch.Generator) -> None:
+        
+        # Check dimension compatibility
+        if self.ndim != self.error_fcn.ndim: 
+            raise Exception("Dimension of `error_fcn` does not match `ndim`!")
+        
+        # Generate centers and scales for each error function
+        self.centers = torch.rand(self.ncomps, self.ndim, generator=gen, dtype=torch.float64)
+        self.scales = torch.rand(self.ncomps, generator=gen, dtype=torch.float64)
+        self.scales *= (self.scale_max - self.scale_min)
+        self.scales += self.scale_min
+
+    def __call__(self, points: torch.Tensor) -> torch.sparse.Tensor:
+        
+        # Compile length-ncomps list for indices and values
+        indices_list = [None] * self.ncomps
+        values_list = [None] * self.ncomps
+        for j in range(self.ncomps):
+            out = self.error_fcn(self.centers[j].tolist())(points)
+            nz_idx = torch.nonzero(out).t()[0]
+            indices_list[j] = torch.row_stack((  # 2-by-len(nz_idx) tensor --> [[j, ..., j], [#, ..., #]]
+                j * torch.ones(len(nz_idx), dtype=torch.int32),
+                nz_idx
+            ))
+            values_list[j] = self.scales[j] * out[nz_idx]
+
+        # Return sparse tensor
+        indices = torch.cat(indices_list, dim=1)
+        values = torch.cat(values_list)
+        sz = [self.ncomps, len(points)]
+        return torch.sparse_coo_tensor(indices, values, sz)
+        
+
+    @property
+    @abstractmethod
+    def ndim(self):
+        pass
+
+    @property
+    @abstractmethod
+    def error_fcn(self):
+        pass
+
+    @property
+    @abstractmethod
+    def ncomps(self):
+        pass
+
+    @property
+    @abstractmethod
+    def scale_min(self):
+        pass
+
+    @property
+    @abstractmethod
+    def scale_max(self):
+        pass
+
+
+class BumpErrorScheme1D1(ErrorScheme):
+
+    ndim = 1
+    error_fcn = BumpErrorFunction1D1
+    ncomps = 100
+    scale_min = 0
+    scale_max = 1
+
+    def __init__(self, gen: torch.Generator) -> None:
+        super().__init__(gen)
+
+
+class BumpErrorScheme2D1(ErrorScheme):
+
+    ndim = 2
+    error_fcn = BumpErrorFunction2D1
+    ncomps = 1000
+    scale_min = 0
+    scale_max = 1
+
+    def __init__(self, gen: torch.Generator) -> None:
+        super().__init__(gen)
+
+
+class BumpErrorScheme3D1(ErrorScheme):
+
+    ndim = 3
+    error_fcn = BumpErrorFunction3D1
+    ncomps = 10000
+    scale_min = 0
+    scale_max = 1
+
+    def __init__(self, gen: torch.Generator) -> None:
+        super().__init__(gen)
+
+
+ERROR_SCHEMES = {
+    'BumpScheme1D1': BumpErrorScheme1D1,
+    'BumpScheme2D1': BumpErrorScheme2D1,
+    'BumpScheme3D1': BumpErrorScheme3D1,
+}
+ 
 
 
 # ---------- MAIN FUNCTIONS ---------- #
@@ -417,6 +571,7 @@ def build_loadings(
         grid_shape: List[int], 
         vals: torch.Tensor
     ) -> torch.Tensor:
+    """Returns a (dense) loading tensor of dimension ncomps-by-grid_shape."""
 
     ndim = len(grid_shape)
     ncomps = vals.shape[0]
@@ -434,25 +589,52 @@ def build_loadings(
     return loads
 
 
+def build_errors(
+        indices: torch.Tensor,
+        grid_shape: List[int],
+        vals: torch.sparse.Tensor
+    ) -> torch.sparse.Tensor:
+    """Returns a (sparse) error tensor of dimension ncomps-by-grid_shape."""
+    
+    # NOTE: `vals` is a sparse tensor of dimension ncomps-by-n, where n is the 
+    # number of points in the grid. To obtain the desired sparse tensor, we 
+    # need only "unfold" the dimension of size n into several whose sizes are
+    # specified in `grid_shape`. We can do this my mapping the ith point in the
+    # grid to the ith element in `indices`.
+    ncomps = vals.shape[0]
+    indices_ = vals._indices()
+    idx = indices[indices_[1]].t()  # indices_[1] contains flattened point indices
+    idx = torch.row_stack((indices_[0], idx))  # indices_[0] contains components
+    size = [ncomps, *grid_shape]
+    return torch.sparse_coo_tensor(
+        indices=idx, 
+        values=vals._values(), 
+        size=size
+    )
+
+
+
 def simulate_ffm_data(
         loads: torch.Tensor,
-        err_sd: int, 
-        num_train: int,
-        num_val: int,
+        err: torch.sparse.Tensor, 
+        num_samps: int,
         batch_size: int,
         gen: torch.Generator = torch.Generator(),
     ):
     num_facs = loads.shape[0]
     grid_shape = loads.shape[1:]
-    n = num_train + num_val
-    while n > 0:
-        n_batch = min(batch_size, n) 
+    ndim = len(grid_shape)
+    num_err_comps = err.shape[0]
+    while num_samps > 0:
+        n_batch = min(batch_size, num_samps) 
         facs = torch.normal(0, 1, (n_batch, num_facs), dtype=torch.float64, generator=gen)
-        errs = torch.normal(0, 1, (n_batch, *grid_shape), dtype=torch.float64, generator=gen)
-        errs *= err_sd
-        data = op_facs_loads(loads, facs, len(grid_shape)) + errs
+        err_coeffs = torch.normal(0, 1, (n_batch, num_err_comps), dtype=torch.float64, generator=gen)
+        data = (
+            nsamp_basis_comb(loads, facs, ndim) + 
+            nsamp_basis_comb(err, err_coeffs, ndim)
+        )
         yield data
-        n -= n_batch
+        num_samps -= n_batch
 
 
 if __name__ == '__main__':
@@ -475,12 +657,12 @@ if __name__ == '__main__':
         help="Loading scheme used to simulate data."
     )
     parser.add_argument(
-        '--num_train', type=int,
-        help="Number of training samples to simulate."
+        '--err_scheme', type=str,
+        help="Error scheme used to simulate data."
     )
     parser.add_argument(
-        '--num_val', type=int,
-        help="Number of validation samples to simulate."
+        '--num_samps', type=int,
+        help="Number of training samples to simulate."
     )
     parser.add_argument(
         '--batch_size', type=int,
@@ -494,19 +676,24 @@ if __name__ == '__main__':
 
     # Configure globals
     config = load_config(args.config)
-    load_scheme = LOADING_SCHEMES[args.load_scheme]()
     gen = torch.Generator().manual_seed(args.seed)
+    load_scheme = LOADING_SCHEMES[args.load_scheme]()
+    err_scheme = ERROR_SCHEMES[args.err_scheme](gen)
 
-    # Check for `load_scheme` and `grid_shape` compatibility
+    # Check for `load_scheme`, `err_scheme`, and `grid_shape` compatibility
     if load_scheme.ndim != len(args.grid_shape):
         msg = ("Number of loading scheme dimensions does not match the number " 
                "of grid dimensions!")
         raise Exception(msg)       
+    if err_scheme.ndim != len(args.grid_shape):
+        msg = ("Number of error scheme dimensions does not match the number " 
+               "of grid dimensions!")
+        raise Exception(msg)  
 
 
-    # ---------- LOADING PREP ---------- #
+    # ---------- LOADING AND ERROR PREP ---------- #
 
-    print("Preparing loadings...")
+    print("Preparing loadings and errors...")
 
     # Delete files from directory
     dir_out = os.path.join(config.scratch_root, 'datasets', args.dir)
@@ -527,19 +714,18 @@ if __name__ == '__main__':
     vals = load_scheme(points)  # ncomps-by-n
     loads = build_loadings(indices, args.grid_shape, vals)
 
-    # ---------- ERROR PREP ---------- #
+    # Build error tensor
+    vals = err_scheme(points)  # ncomps-by-n (sparse)
+    errs = build_errors(indices, args.grid_shape, vals)
 
-    # TODO: Error preparation
-    err_sd = 0.5
 
     # ---------- DATA SIMULATION ---------- #
 
     print("Simulating new data...")
     dataloader = simulate_ffm_data(
         loads, 
-        err_sd,
-        num_train=args.num_train,
-        num_val=args.num_val,
+        errs,
+        num_samps=args.num_samps,
         batch_size=args.batch_size,
         gen=gen
     )

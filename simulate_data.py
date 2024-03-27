@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from typing import List, Union
 
 from config import load_config
-from utils.utils import refresh_directory, write_generated_tensor
+from utils.utils import refresh_directory, safe_normalize, write_generated_tensor
 
 
 # ---------- UTILITIES ---------- #
@@ -193,7 +193,7 @@ class LoadingFunction(ABC):
         vals = torch.zeros(len(points), dtype=torch.float64)
         for piece in self.pieces:
             vals += piece(points)
-        return vals / torch.norm(vals)
+        return safe_normalize(vals)
     
     @property
     @abstractmethod
@@ -366,7 +366,7 @@ class TrigLoadingScheme1D1(LoadingScheme):
         SineLoading1D, 
         CosineLoading1D
     ]
-    scales = [2, 1]
+    scales = [3, 2]
 
 
 class BumpLoadingScheme1D1(LoadingScheme):
@@ -386,7 +386,7 @@ class BumpLoadingScheme2D1(LoadingScheme):
         CornerPairLoading2D1, 
         CornerPairLoading2D2
     ]
-    scales = [2, 1]
+    scales = [4, 3]
 
 class BumpLoadingScheme2D2(LoadingScheme):
 
@@ -429,8 +429,8 @@ class ErrorFunction(ABC):
     method."""
 
     def __call__(self, points: torch.Tensor) -> torch.Tensor:
-        out = self.fcn(points)
-        return out / torch.norm(out)
+        vals = self.fcn(points)
+        return safe_normalize(vals)
 
 
 class BumpErrorFunction1D1(ErrorFunction):

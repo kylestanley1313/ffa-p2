@@ -72,6 +72,13 @@ def multiply_list(list_: List[Union[int, float]]):
     return out
 
 
+def safe_normalize(tensor: torch.Tensor) -> torch.Tensor:
+    norm = torch.norm(tensor)
+    if norm > 0:
+        tensor = tensor / norm
+    return tensor
+
+
 def get_indices_from_grid_shape(grid_shape: torch.Tensor):
     indices = []
     for sz in grid_shape:

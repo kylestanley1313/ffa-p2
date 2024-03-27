@@ -133,8 +133,6 @@ def allocate_points_ddp(
 
 def compute_covariance(
         points_file: str,
-        train_prop: float,
-        seed: int,
         dir_cov: str,
         dir_data: str
     ) -> None:
@@ -142,55 +140,37 @@ def compute_covariance(
     `points_file` of `dir_cov`, computes and saves training and validation 
     covariances."""
 
-    gen = torch.Generator().manual_seed(seed)
-
     # Read in points
     path = os.path.join(dir_cov, points_file)
     points = torch.load(path)
 
-    # Compute covariance
-    num_points = len(points)
-    t1_train = torch.zeros(num_points, dtype=torch.float64)
-    t2_train = torch.zeros(num_points, dtype=torch.float64)
-    t3_train = torch.zeros(num_points, dtype=torch.float64)
-    t1_valid = torch.zeros(num_points, dtype=torch.float64)
-    t2_valid = torch.zeros(num_points, dtype=torch.float64)
-    t3_valid = torch.zeros(num_points, dtype=torch.float64)
-    n_train = 0
-    n_valid = 0
-    data_loader = read_tensors(dir_data, 'data')
-    for data in data_loader: 
+    def _compute_covariance(split: str) -> None: 
 
-        # Perform train-valid split
-        sz = len(data)
-        num_train = int(train_prop * sz)
-        idx = torch.randperm(sz, generator=gen)
-        data_train = data[idx[:num_train]]
-        data_valid = data[idx[num_train:]]
+        # Compute covariance
+        num_points = len(points)
+        t1 = torch.zeros(num_points, dtype=torch.float64)
+        t2 = torch.zeros(num_points, dtype=torch.float64)
+        t3 = torch.zeros(num_points, dtype=torch.float64)
+        n = 0
+        data_loader = read_tensors(dir_data, f'data-{split}')
+        for data in data_loader: 
 
-        n_train += len(data_train)
-        n_valid += len(data_valid)
-        for i in range(num_points): 
-            row, col = points[i]
+            n += len(data)
+            for i in range(num_points): 
+                row, col = points[i]
+                t1[i] += torch.sum(data[:,row] * data[:,col])
+                t2[i] += torch.sum(data[:,row])
+                t3[i] += torch.sum(data[:,col])
 
-            t1_train[i] += torch.sum(data_train[:,row] * data_train[:,col])
-            t2_train[i] += torch.sum(data_train[:,row])
-            t3_train[i] += torch.sum(data_train[:,col])
+        cov = (t1 - t2 * t3 / n) / (n - 1)
 
-            t1_valid[i] += torch.sum(data_valid[:,row] * data_valid[:,col])
-            t2_valid[i] += torch.sum(data_valid[:,row])
-            t3_valid[i] += torch.sum(data_valid[:,col])
+        # Save covariances
+        cov_file = points_file.replace('points', f'cov-{split}')
+        cov_path = os.path.join(dir_cov, cov_file)
+        torch.save(cov, cov_path)
 
-    cov_train = (t1_train - t2_train * t3_train / n_train) / (n_train - 1)
-    cov_valid = (t1_valid - t2_valid * t3_valid / n_valid) / (n_valid - 1)
-
-    # Save covariances
-    cov_file = points_file.replace('points', 'cov-train')
-    cov_path = os.path.join(dir_cov, cov_file)
-    torch.save(cov_train, cov_path)
-    cov_file = points_file.replace('points', 'cov-valid')
-    cov_path = os.path.join(dir_cov, cov_file)
-    torch.save(cov_valid, cov_path)
+    _compute_covariance('train')
+    _compute_covariance('valid')
 
 
 def init_process(
@@ -280,6 +260,24 @@ if __name__ == '__main__':
         p.join()
 
 
+    # ---------- DATA SPLITTING ---------- #
+
+    gen = torch.Generator().manual_seed(args.seed)
+    data_loader = read_tensors(dir_data, 'data')
+    i = 0
+    for data in data_loader: 
+        sz = len(data)
+        num_train = int(args.train_prop * sz)
+        idx = torch.randperm(sz, generator=gen)
+        data_train = data[idx[:num_train]]
+        data_valid = data[idx[num_train:]]
+        path_train = os.path.join(dir_data, f'data-train-{i}.pt')
+        path_valid = os.path.join(dir_data, f'data-valid-{i}.pt')
+        torch.save(data_train, path_train)
+        torch.save(data_valid, path_valid)
+        i += 1
+        
+
     # ---------- COVARIANCE COMPUTATION ---------- #
     print(f"Computing covariance...")
 
@@ -287,11 +285,7 @@ if __name__ == '__main__':
     points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
     pool = mp.Pool(processes=args.world_size_cov)
     results = pool.map(
-        partial(
-            compute_covariance, 
-            train_prop=args.train_prop, seed=args.seed,
-            dir_cov=dir_cov, dir_data=dir_data
-        ), 
+        partial(compute_covariance, dir_cov=dir_cov, dir_data=dir_data), 
         points_files
     )
     pool.close()

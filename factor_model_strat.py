@@ -33,42 +33,6 @@ from utils.utils import (
 from utils.model import LowRankCovariance
     
 
-def fair_allocate(num_items: int, num_groups: int) -> List[int]:
-    """Evenly distributes num_items across num_groups."""
-    out = [num_items // num_groups] * num_groups
-    remainder = num_items % num_groups
-    out[0:remainder] = [x + 1 for x in out[0:remainder]]
-    return out
-
-
-def gen_strata(nprocs: int) -> List[Tuple[Tuple]]:
-    path = os.path.join('strata', f'nprocs-{nprocs}.pt')
-    if os.path.exists(path):
-        tensor = torch.load(path)
-        num_strata = 2 * nprocs + 1
-        strata = [None] * num_strata
-        for s in range(num_strata):
-            mask = tensor[:,0] == s
-            stratum = tuple(tuple(s_) for s_ in tensor[mask, 1:].tolist())
-            strata[s] = stratum
-        return strata
-    else:
-        raise Exception(f"Strata do not exist for {nprocs} processes.")
-
-
-def compute_covariance(
-        rank: int, 
-        world_size: int,  # For consistency with other distributed functions
-        config: str, 
-        dir_out: str
-    ) -> None:
-    config = load_config(config)
-    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
-    dir_data = os.path.join(config.scratch_root, dir_out, 'data')
-    cov_comp = CovarianceComputer(rank, dir_cov, dir_data)
-    cov_comp.compute()
-
-
 def sync_model(
         rank: int, 
         world_size: int, 
@@ -203,7 +167,7 @@ def compute_loss(model, dataloader, objective, rank, world_size):
             return loss / n
 
     # Compute rank-wise loss
-    dataloader.set_all_strata()
+    dataloader.set_training()
     train_loss = compute_loss_(dataloader)
     dataloader.set_validation()  
     val_loss = compute_loss_(dataloader)
@@ -233,7 +197,6 @@ def train(
         dir_out: str,
         grid_shape: List[int], 
         num_facs: int, 
-        train_prop: float,
         batch_size: int,
         lr: float, 
         patience: int,
@@ -264,7 +227,7 @@ def train(
         benchmark=config.benchmark
     )
 
-    dataset = Dataset_(dir_cov, rank, world_size, train_prop, gen)
+    dataset = Dataset_(dir_cov, rank, world_size)
     batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
     dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
     # sampler = DistributedStratifiedDatasetSampler(dataset, gen)
@@ -327,9 +290,9 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
-    parser.add_argument('--dataset', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--world_size', type=int)
+    parser.add_argument('--grid_shape', type=int, nargs='+')
     parser.add_argument('--num_facs', type=int)
     parser.add_argument('--delta', type=float)
     parser.add_argument(
@@ -337,7 +300,6 @@ if __name__ == '__main__':
         choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
     )
     parser.add_argument('--init_prop', type=float, default=1)
-    parser.add_argument('--train_prop', type=float, default=0.8)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
@@ -351,7 +313,6 @@ if __name__ == '__main__':
     seeds = gen_seeds(gen, args.world_size)
 
     # Set directories and paths
-    dir_dataset = os.path.join(config.scratch_root, 'datasets', args.dataset)
     dir_out = os.path.join('out', args.dir_out)
     dir_data = os.path.join(config.scratch_root, dir_out, 'data')
     dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
@@ -363,110 +324,11 @@ if __name__ == '__main__':
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
 
     # Delete files from various directories
-    refresh_directory(dir_data)
-    refresh_directory(dir_cov)
-    if config.benchmark:
-        refresh_directory(dir_bench)
     remove_file(path_init)
     remove_file(path_model)
 
-    # Flatten dataset, getting `grid_shape` and `num_vars` along the way
-    grid_shape = flatten_dataset(dir_dataset, dir_data)
-    num_vars = multiply_list(grid_shape)
-
     # Multiprocessing configurations
     mp.set_start_method('spawn')
-
-
-    # ---------- POINT STRATIFICATION AND ALLOCATION ---------- #
-    print("Stratifying training points and allocating to processes...")
-
-    # Generate strata and a dict that maps blocks to their rank and stratum number
-    strata = gen_strata(args.world_size)
-    blocks_map = {}
-    i = 0
-    while i < len(strata):
-        stratum = strata[i]
-        rank = 0
-        for block in stratum:
-            blocks_map[block] = {'rank': rank, 'stratum': i}
-            rank += 1
-        i += 1
-
-    # Segment variables
-    seg_cnts = fair_allocate(num_vars, 2*args.world_size)
-    idx = 0
-    segs = torch.zeros(num_vars, dtype=torch.int32)
-    for seg, cnt in enumerate(seg_cnts):
-        segs[idx:(idx+cnt)] = torch.ones(cnt) * seg
-        idx += cnt
-    segs = segs[torch.randperm(num_vars, generator=gen)]
-
-    # For worker i (i = 0, ..., world_size - 1):
-    #   - Create points-{i}.pt file of points
-    #   - Create stratum-{i}.pt file of strata
-    points_loader = gen_points(grid_shape, args.delta, int(1.2 * num_vars))
-    for points_batch in points_loader:
-        sz = len(points_batch)
-
-        seg0_batch = segs[points_batch[:,0]]
-        seg1_batch = segs[points_batch[:,1]]
-
-        rank_batch = torch.zeros(sz, dtype=torch.int32)
-        stratum_batch = torch.zeros(sz, dtype=torch.int32)
-
-        for i in range(sz):
-
-            block = tuple(sorted(
-                [seg0_batch[i].item(), seg1_batch[i].item()], 
-                reverse=True
-            ))
-            rank_batch[i] = blocks_map[block]['rank']
-            stratum_batch[i] = blocks_map[block]['stratum']
-        
-        for r in range(args.world_size):
-
-            mask = rank_batch == r
-            points_rank = points_batch[mask]
-            stratum_rank = stratum_batch[mask]
-
-            path_points = os.path.join(dir_cov, f'points-{r}.pt')
-            path_stratum = os.path.join(dir_cov, f'stratum-{r}.pt')
-
-            if os.path.exists(path_points):
-                old_points_rank = torch.load(path_points)
-                old_stratum_rank = torch.load(path_stratum)
-                points_rank = torch.cat((old_points_rank, points_rank))
-                stratum_rank = torch.cat((old_stratum_rank, stratum_rank))
-
-            torch.save(points_rank, path_points)
-            torch.save(stratum_rank, path_stratum)
-
-
-    # ---------- COVARIANCE PREPARATION ---------- #
-    print("Computing covariance...")
-    start = time.time()
-
-    remove_file(path_shared)
-    processes = []
-    for rank in range(args.world_size):
-        p = mp.Process(
-            target=init_process, 
-            args=(rank, args.world_size, compute_covariance, path_shared, config.backend),
-            kwargs={
-                'config': args.config,
-                'dir_out': dir_out
-            }
-        )
-        p.start()
-        processes.append(p)
-
-    for p in processes:
-        p.join()
-    
-    end = time.time()
-    if config.benchmark:
-        write_rows_to_csv(other_bench_path, [['covariance', end - start]])
 
 
     # ---------- INITIALIZATION ---------- #
@@ -479,6 +341,7 @@ if __name__ == '__main__':
         'pca_randomized': 'randomized'
     }
     if args.init_method == 'random':
+        num_vars = multiply_list(args.grid_shape)
         loads = torch.randn(args.num_facs, num_vars, generator=gen, dtype=torch.float64)
     else:
 
@@ -525,9 +388,8 @@ if __name__ == '__main__':
             kwargs={
                 'config': args.config,
                 'dir_out': dir_out,
-                'grid_shape': grid_shape,
+                'grid_shape': args.grid_shape,
                 'num_facs': args.num_facs,
-                'train_prop': args.train_prop,
                 'batch_size': args.batch_size,
                 'lr': args.lr,
                 'patience': 5,

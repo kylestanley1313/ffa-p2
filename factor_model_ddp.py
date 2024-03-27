@@ -20,12 +20,9 @@ from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.utils import (
     create_second_difference_matrix, 
-    flatten_dataset,
-    gen_points, 
     gen_seeds, 
     multiply_list,
     read_tensors,
-    refresh_directory,
     remove_file,
     write_rows_to_csv
 )
@@ -88,57 +85,23 @@ class DistributedCovarianceDataset(Dataset):
             self, 
             dir: str, 
             rank: int, 
-            world_size: int,
-            prop_train: float = 0.8,
-            gen: torch.Generator = torch.Generator()
+            world_size: int
         ) -> None:
 
-        points_train_list = []
-        cov_train_list = []
-        points_valid_list = []
-        cov_valid_list = []
-        self.rank_counts = {r: 0 for r in range(world_size)}
+        # Get point counts for all ranks and save points for this rank
+        self.rank_counts = {}
+        for r in range(world_size):
+            path = os.path.join(dir, f'points-{rank}.pt')
+            points = torch.load(path)
+            self.rank_counts[r] = len(points)
+            if rank == r:
+                self.points = points
 
-        all_points = read_tensors(dir, 'points')
-        all_cov = read_tensors(dir, 'cov')
-        iter = 0
-        for points, cov in zip(all_points, all_cov): 
-
-            # Loop over ranks to aggregate counts
-            for r in range(world_size):
-                
-                # Get all indices for rank
-                start = (r + iter) % world_size  # TODO: ensure even distribution of counts
-                idx = torch.arange(start, len(cov), world_size)
-                
-                # Set rank count
-                sz = len(idx)
-                num_train = int(prop_train * sz)
-                self.rank_counts[r] += num_train
-
-                if r == rank:
-
-                    # Perform train-valid split
-                    idx_ = torch.randperm(sz, generator=gen)
-                    idx_train = idx[idx_[:num_train]]
-                    idx_valid = idx[idx_[num_train:]]
-                    
-                    # Collect points/cov for rank assigned to this dataset
-                    points_train_list.append(points[idx_train])
-                    cov_train_list.append(cov[idx_train])
-                    points_valid_list.append(points[idx_valid])
-                    cov_valid_list.append(cov[idx_valid])
-
-            iter += 1
-
-        # Training and validation points/cov
-        self.points_train = torch.row_stack(points_train_list)
-        self.cov_train = torch.cat(cov_train_list)
-        self.points_valid = torch.row_stack(points_valid_list)
-        self.cov_valid = torch.cat(cov_valid_list)
-
-        # Placeholder attributes set by methods
-        self.points = None
+        # Get train/valid covariance for this rank
+        path = os.path.join(dir, f'cov-train-{rank}.pt')
+        self.cov_train = torch.load(path)
+        path = os.path.join(dir, f'cov-valid-{rank}.pt')
+        self.cov_valid = torch.load(path)
         self.cov = None
 
     def __len__(self):
@@ -148,20 +111,17 @@ class DistributedCovarianceDataset(Dataset):
         return self.points[index], self.cov[index]
     
     def set_training(self):
-        self.points = self.points_train
         self.cov = self.cov_train
 
     def set_validation(self):
-        self.points = self.points_valid
         self.cov = self.cov_valid
     
     def storage(self):
         """Returns size of dataset (in bytes)."""
-        self.set_training()
         points_sz = sys.getsizeof(self.points.untyped_storage())
+        self.set_training()
         cov_sz = sys.getsizeof(self.cov.untyped_storage())
         self.set_validation()
-        points_sz += sys.getsizeof(self.points.untyped_storage())
         cov_sz += sys.getsizeof(self.cov.untyped_storage())
         return points_sz + cov_sz
     
@@ -210,34 +170,6 @@ class BasicDataLoader(object):
 
     
 # -------------------- RUN -------------------- #
-
-def compute_covariance(points_file: str, dir_cov: str, dir_data: str) -> None:
-    """For a dataset contained in `dir_data` and points contained in 
-    `points_file` of `dir_cov`, computes and saves covariances."""
-
-    # Compute covariance
-    points_path = os.path.join(dir_cov, points_file)
-    points = torch.load(points_path)
-    num_points = len(points)
-    t1 = torch.zeros(num_points, dtype=torch.float64)
-    t2 = torch.zeros(num_points, dtype=torch.float64)
-    t3 = torch.zeros(num_points, dtype=torch.float64)
-    n = 0
-    data_loader = read_tensors(dir_data, 'data')
-    for data_batch in data_loader: 
-        n += len(data_batch)
-        for i in range(num_points): 
-            row, col = points[i]
-            t1[i] += torch.sum(data_batch[:,row] * data_batch[:,col])
-            t2[i] += torch.sum(data_batch[:,row])
-            t3[i] += torch.sum(data_batch[:,col])
-    cov = (t1 - t2 * t3 / n) / (n - 1)
-
-    # Save covariance
-    cov_file = points_file.replace('points', 'cov')
-    cov_path = os.path.join(dir_cov, cov_file)
-    torch.save(cov, cov_path)
-
 
 def process_epoch(model, dataloader, objective, optimizer):
 
@@ -381,8 +313,6 @@ def compute_objective(model, dataloader, alpha, penalty, rank, world_size):
 #     dist.destroy_process_group()
 
 
-
-
 def compute_loss(model, dataloader, objective, rank, world_size):
 
     def compute_loss_(dataloader):
@@ -415,7 +345,6 @@ def init_process(
         grid_shape: List[int],
         num_facs: int, 
         alpha: float,
-        train_prop: float,
         batch_size: int,
         lr: float, 
         patience: int,
@@ -431,7 +360,7 @@ def init_process(
     fcn(
         rank, world_size, config, dir_out,
         grid_shape, num_facs, alpha,
-        train_prop, batch_size, lr, patience, max_epochs, seed
+        batch_size, lr, patience, max_epochs, seed
     )
 
 
@@ -443,7 +372,6 @@ def train(
         grid_shape: List[int], 
         num_facs: int, 
         alpha: float,
-        train_prop: float,
         batch_size: int,
         lr: float, 
         patience: int,
@@ -473,7 +401,7 @@ def train(
         benchmark=config.benchmark
     )
 
-    dataset = Dataset_(dir_cov, rank, world_size, train_prop, gen)
+    dataset = Dataset_(dir_cov, rank, world_size)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
@@ -505,7 +433,9 @@ def train(
             # Early stopping
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
-                torch.save(model.state_dict(), path_model)
+                state_dict = model.state_dict()
+                state_dict['loads'] = state_dict.pop('module.loads')  # replace DDP key
+                torch.save(state_dict, path_model)
                 epochs_waited = 0
             else:
                 epochs_waited += 1
@@ -531,9 +461,9 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
-    parser.add_argument('--dataset', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--world_size', type=int)
+    parser.add_argument('--grid_shape', type=int, nargs='+')
     parser.add_argument('--num_facs', type=int)
     parser.add_argument('--alpha', type=float, default=0)
     parser.add_argument('--delta', type=float)
@@ -542,7 +472,6 @@ if __name__ == '__main__':
         choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
     )
     parser.add_argument('--init_prop', type=float, default=1.0)
-    parser.add_argument('--train_prop', type=float, default=0.8)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
     parser.add_argument('--max_epochs', type=int, default=100)
@@ -553,7 +482,6 @@ if __name__ == '__main__':
     config = load_config(args.config)
 
     # Set directories and paths
-    dir_dataset = os.path.join(config.scratch_root, 'datasets', args.dataset)
     dir_out = os.path.join('out', args.dir_out)
     dir_data = os.path.join(config.scratch_root, dir_out, 'data')
     dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
@@ -567,46 +495,11 @@ if __name__ == '__main__':
     seeds = gen_seeds(gen, args.world_size)
 
     # Delete files from various directories
-    refresh_directory(dir_data)
-    refresh_directory(dir_cov)
-    if config.benchmark:
-        refresh_directory(dir_bench)
     remove_file(path_init)
     remove_file(path_model)
 
-    # Flatten dataset, getting `grid_shape` and `num_vars` along the way
-    grid_shape = flatten_dataset(dir_dataset, dir_data)
-    num_vars = multiply_list(grid_shape)
-
     # Multiprocessing configurations
     mp.set_start_method('spawn')
-
-
-    # ---------- POINT GENERATION ---------- #
-    cov_batch_size = 2 * num_vars
-    points_loader = gen_points(grid_shape, args.delta, cov_batch_size)
-    iter = 0
-    for points in points_loader:
-        path = os.path.join(dir_cov, f'points-{iter}.pt')
-        torch.save(points, path)
-        iter += 1
-
-
-    # ---------- COVARIANCE PREPARATION ---------- #
-    print(f"Computing covariance...")
-
-    start = time.time()
-    points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
-    pool = mp.Pool(processes=args.world_size)
-    results = pool.map(
-        partial(compute_covariance, dir_cov=dir_cov, dir_data=dir_data), 
-        points_files
-    )
-    pool.close()
-    pool.join()
-    end = time.time()
-    if config.benchmark:
-        write_rows_to_csv(other_bench_path, [['covariance', end - start]]) 
 
 
     # ---------- INITIALIZATION ---------- #
@@ -619,12 +512,13 @@ if __name__ == '__main__':
         'pca_randomized': 'randomized'
     }
     if args.init_method == 'random':
+        num_vars = multiply_list(args.grid_shape)
         loads = torch.randn(args.num_facs, num_vars, generator=gen, dtype=torch.float64)
     else:
 
         # Read in (possibly subsampled) data
         data = []
-        dataloader = read_tensors(dir_data, 'data')
+        dataloader = read_tensors(dir_data, 'data-train')
         for batch in dataloader:
             n = len(batch)
             num_to_keep = int(n * args.init_prop)
@@ -668,8 +562,8 @@ if __name__ == '__main__':
             target=init_process, 
             args=(
                 rank, args.world_size, path_shared, args.config, dir_out,
-                grid_shape, args.num_facs, args.alpha,
-                args.train_prop, args.batch_size, args.lr, 5, args.max_epochs, 
+                args.grid_shape, args.num_facs, args.alpha,
+                args.batch_size, args.lr, 5, args.max_epochs, 
                 seeds[rank], train, config.backend
             )
         )

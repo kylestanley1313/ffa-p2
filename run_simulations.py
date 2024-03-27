@@ -81,9 +81,9 @@ if __name__ == '__main__':
             'dir': sim_id,
             'grid_shape': simulation['grid_shape'],
             'load_scheme': simulation['load_scheme'],
-            'num_train': simulation['num_train'],
-            'num_val': simulation['num_val'],
-            'batch_size': int(simulation['num_train'] / 4)
+            'err_scheme': simulation['err_scheme'],
+            'num_samps': simulation['num_samps'],
+            'batch_size': int(simulation['num_samps'] / 4)
         }
         execute_script(path, flags, raise_error)
 
@@ -98,10 +98,24 @@ if __name__ == '__main__':
             'num_facs': simulation['num_facs'],
             'delta': simulation['delta'],
             'init_method': simulation['init_method'],
-            'init_perc': simulation['init_perc'],
+            'init_prop': simulation['init_prop'],
+            'train_prop': simulation['train_prop'],
             'batch_size': simulation['batch_size'],
             'lr': simulation['lr'],
             'max_epochs': simulation['max_epochs']
+        }
+        if simulation['estimation'] == 'ddp':
+            flags['alpha'] = simulation['alpha']
+        # if simulation['opt']: 
+        #     flags['opt'] = None
+        execute_script(path, flags, raise_error)
+
+
+        # ------ POST-PROCESSING ------ #
+        path = os.path.join(config.root, 'postprocess.py')
+        flags = {
+            'config': args.config,
+            'dir_out': dir_out
         }
         execute_script(path, flags, raise_error)
 

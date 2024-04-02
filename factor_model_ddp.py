@@ -30,29 +30,33 @@ from utils.utils import (
 
 # -------------------- UTILITIES -------------------- #
 
-def penalty(loads: torch.Tensor, diff_mat: torch.Tensor):
+def loss_fcn(preds, cov, num_vars):
+    return torch.sum((preds - cov) ** 2) / num_vars ** 2
+
+
+def penalty_fcn(loads: torch.Tensor, alpha: float, diff_mat: torch.Tensor):
     num_vars, num_facs = loads.shape
-    return torch.trace(loads.t() @ diff_mat @ loads) / num_vars / num_facs
+    return alpha * torch.trace(loads.t() @ diff_mat @ loads) / num_vars / num_facs
 
 
-def penalty_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
+def penalty_fcn_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
     num_vars, num_facs = loads.shape
     return 2 * diff_mat @ loads / num_vars / num_facs
 
 
-def objective(
-        preds: torch.Tensor, 
-        cov: torch.Tensor, 
-        model: 'LowRankCovariance', 
-        alpha: float, 
-        diff_mat: torch.Tensor
-    ):
-    err = torch.sum((preds - cov) ** 2) / model.module.num_vars ** 2
-    if alpha > 0:
-        pen = penalty(model.module.loads, diff_mat)
-        return err + alpha * pen
-    else: 
-        return err
+# def objective(
+#         preds: torch.Tensor, 
+#         cov: torch.Tensor, 
+#         model: 'LowRankCovariance', 
+#         alpha: float, 
+#         diff_mat: torch.Tensor
+#     ):
+#     err = torch.sum((preds - cov) ** 2) / model.module.num_vars ** 2
+#     if alpha > 0:
+#         pen = penalty(model.module.loads, diff_mat)
+#         return err + alpha * pen
+#     else: 
+#         return err
 
 
 # -------------------- MODULES -------------------- #
@@ -173,17 +177,19 @@ class BasicDataLoader(object):
     
 # -------------------- RUN -------------------- #
 
-def process_epoch(model, dataloader, objective, optimizer):
+def process_epoch(model, dataloader, loss_fcn, penalty_fcn, optimizer):
 
     for points, cov in dataloader:
 
         # Forward pass
         preds = model(points[:,0], points[:,1])
-        loss = objective(preds, cov, model)
+        loss = loss_fcn(preds, cov)
+        penalty = penalty_fcn(model.module.loads)
+        objective = loss + penalty
 
         # Backward pass
         optimizer.zero_grad()
-        loss.backward()
+        objective.backward()
         optimizer.step()
 
 
@@ -226,22 +232,22 @@ def process_epoch(model, dataloader, objective, optimizer):
 #         optimizer.step()
 
 
-def compute_objective(model, dataloader, alpha, penalty, rank, world_size):
+# def compute_objective(model, dataloader, alpha, penalty, rank, world_size):
 
-    # Compute and communicate loss
-    dataset = dataloader.dataset
-    preds = model(dataset.points[:,0], dataset.points[:,1])
-    objective = mse_loss(preds, dataset.cov)
-    if alpha > 0:
-        objective += alpha * penalty(model.module.loads)
-    if rank > 0: 
-        dist.send(objective, 0)
-    else: 
-        for r in range(1, world_size):
-            worker_objective = torch.zeros(1, dtype=torch.float64)
-            dist.recv(worker_objective, r)
-            objective += worker_objective.item()
-        return objective
+#     # Compute and communicate loss
+#     dataset = dataloader.dataset
+#     preds = model(dataset.points[:,0], dataset.points[:,1])
+#     objective = mse_loss(preds, dataset.cov)
+#     if alpha > 0:
+#         objective += alpha * penalty(model.module.loads)
+#     if rank > 0: 
+#         dist.send(objective, 0)
+#     else: 
+#         for r in range(1, world_size):
+#             worker_objective = torch.zeros(1, dtype=torch.float64)
+#             dist.recv(worker_objective, r)
+#             objective += worker_objective.item()
+#         return objective
     
     
 # def train_opt(
@@ -315,27 +321,33 @@ def compute_objective(model, dataloader, alpha, penalty, rank, world_size):
 #     dist.destroy_process_group()
 
 
-def compute_loss(model, dataloader, objective, rank, world_size):
+def compute_loss_penalty(model, dataloader, loss_fcn, penalty_fcn, rank, world_size):
 
-    def compute_loss_(dataloader):
+    def compute_loss_penalty_(dataloader):
         dataset = dataloader.dataset
         preds = model(dataset.points[:,0], dataset.points[:,1])
-        loss = objective(preds, dataset.cov, model)
+        loss = loss_fcn(preds, dataset.cov)
+        penalty = penalty_fcn(model.module.loads)
         if rank > 0: 
             dist.send(loss, 0)
+            dist.send(penalty, 0)
+            return None, None
         else: 
             for r in range(1, world_size):
                 worker_loss = torch.zeros(1, dtype=torch.float64)
+                worker_penalty = torch.zeros(1, dtype=torch.float64)
                 dist.recv(worker_loss, r)
+                dist.recv(worker_penalty, r)
                 loss += worker_loss.item()
-            return loss
+                penalty += worker_penalty.item()
+            return loss, penalty
 
     dataloader.set_training()
-    train_loss = compute_loss_(dataloader)
+    train_loss, train_penalty = compute_loss_penalty_(dataloader)
     dataloader.set_validation()
-    valid_loss = compute_loss_(dataloader)
+    valid_loss, valid_penalty = compute_loss_penalty_(dataloader)
 
-    return train_loss, valid_loss
+    return train_loss, train_penalty, valid_loss, valid_penalty
 
 
 def init_process(
@@ -414,7 +426,9 @@ def train(
 
     diff_mat = create_second_difference_matrix(grid_shape)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    objective_ = partial(objective, alpha=alpha, diff_mat=diff_mat)
+    loss_fcn_ = partial(loss_fcn, num_vars=num_vars)
+    penalty_fcn_ = partial(penalty_fcn, alpha=alpha, diff_mat=diff_mat)
+    # objective_ = partial(objective, alpha=alpha, diff_mat=diff_mat)
 
     path_model = os.path.join(dir_out, 'model.pth')
     best_valid_loss = float('inf')
@@ -425,12 +439,17 @@ def train(
     for epoch in range(max_epochs):
         
         dataloader.set_training()
-        process_epoch_(model, dataloader, objective_, optimizer)
-        train_loss, valid_loss = compute_loss(model, dataloader, objective_, rank, world_size)
+        process_epoch_(model, dataloader, loss_fcn_, penalty_fcn_, optimizer)
+        train_loss, train_penalty, valid_loss, _ = compute_loss_penalty(
+            model, dataloader, 
+            loss_fcn_, penalty_fcn_, 
+            rank, world_size
+        )
         
         # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
-            print(f"epoch = {epoch + 1} | train_loss = {train_loss} | valid_loss = {valid_loss}")
+            train_obj = train_loss + train_penalty
+            print(f"epoch = {epoch + 1} | train_obj = {train_obj} | valid_loss = {valid_loss}")
 
             # Early stopping
             if valid_loss < best_valid_loss:
@@ -439,7 +458,7 @@ def train(
                 state_dict['loads'] = state_dict.pop('module.loads')  # replace DDP key
                 torch.save({
                     'state_dict': state_dict,
-                    'train_loss': train_loss,
+                    'train_obj': train_obj,
                     'valid_loss': valid_loss
                 }, path_model)
                 epochs_waited = 0

@@ -732,6 +732,6 @@ if __name__ == '__main__':
         batch_size=args.batch_size,
         gen=gen
     )
-    write_generated_tensor(dataloader, dir_out, 'data')
+    write_generated_tensor(dataloader, dir_out, 'data-full')
 
     print("DONE!")

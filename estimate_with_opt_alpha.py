@@ -6,10 +6,8 @@ from config import load_config
 from utils.utils import execute_script, refresh_directory
 
 
-# ALPHAS = [0, 1, 10, 100, 1000]
-ALPHAS = [10]
+ALPHAS = [0, 1, 10, 100, 1000, 10000]
 
-# TODO: Choice of alpha should be based on validation error, not validation objective
 
 if __name__ == '__main__':
 
@@ -76,4 +74,5 @@ if __name__ == '__main__':
             os.rename(path_curr_mod, path_best_mod)
         else: 
             os.rename(path_best_mod, path_out_mod)
+            break
 

@@ -169,6 +169,7 @@ def compute_covariance(
         cov_path = os.path.join(dir_cov, cov_file)
         torch.save(cov, cov_path)
 
+    _compute_covariance('full')
     _compute_covariance('train')
     _compute_covariance('valid')
 

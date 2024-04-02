@@ -1,37 +1,8 @@
 import argparse
 import os
-import subprocess
-import sys
-from typing import Dict
 
 from config import load_config
-from utils.utils import load_yaml, refresh_directory
-
-
-
-def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
-
-    # Compile arguments for subprocess.run()
-    args = [sys.executable, path]
-    for k, v in flags.items():
-        args.append(f'--{k}')
-        if v is not None:
-            if isinstance(v, list):
-                for item in v:
-                    args.append(str(item))
-            else:
-                args.append(str(v))
-
-    # Run script, (optionally) raising an error if encountered
-    result = subprocess.run(args, capture_output=True, text=True)
-    if len(result.stderr) > 0:
-        msg = f"Error: {result.stderr}"
-        if raise_error:
-            raise Exception(msg)
-        else:
-            print(msg)
-    print(result.stdout)
-    
+from utils.utils import execute_script, load_yaml, refresh_directory
 
 
 if __name__ == '__main__':

@@ -416,7 +416,7 @@ def train(
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     objective_ = partial(objective, alpha=alpha, diff_mat=diff_mat)
 
-    path_model = os.path.join(dir_out, 'cov-model.pth')
+    path_model = os.path.join(dir_out, 'model.pth')
     best_valid_loss = float('inf')
     epochs_waited = 0
     early_stop = torch.tensor(False)
@@ -430,14 +430,18 @@ def train(
         
         # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
-            print(f"epoch = {epoch} | train_loss = {train_loss} | valid_loss = {valid_loss}")
+            print(f"epoch = {epoch + 1} | train_loss = {train_loss} | valid_loss = {valid_loss}")
 
             # Early stopping
             if valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 state_dict = model.state_dict()
                 state_dict['loads'] = state_dict.pop('module.loads')  # replace DDP key
-                torch.save(state_dict, path_model)
+                torch.save({
+                    'state_dict': state_dict,
+                    'train_loss': train_loss,
+                    'valid_loss': valid_loss
+                }, path_model)
                 epochs_waited = 0
             else:
                 epochs_waited += 1
@@ -446,7 +450,8 @@ def train(
                     early_stop = torch.tensor(True)
 
             # Update learning rate via bold driver
-            lr *= 1.05 if train_loss < prev_train_loss else 0.5
+            # TODO: How to handle lr updates? Fixed?
+            # lr *= 1.05 if train_loss < prev_train_loss else 0.5
 
         # Communicate early_stop and lr to non-zero ranks
         dist.barrier()
@@ -489,7 +494,7 @@ if __name__ == '__main__':
     dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
     dir_bench = os.path.join(dir_out, 'bench')
     path_init = os.path.join(dir_out, 'init_loads.pt')
-    path_model = os.path.join(dir_out, 'cov-model.pth')
+    path_model = os.path.join(dir_out, 'model.pth')
     other_bench_path = os.path.join(dir_bench, 'other.csv')
     
     # Seeding

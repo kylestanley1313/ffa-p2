@@ -2,6 +2,8 @@ import csv
 import math
 import os
 import shutil
+import subprocess
+import sys
 import torch
 import yaml
 from typing import Dict, Generator, List, Union
@@ -70,6 +72,29 @@ def multiply_list(list_: List[Union[int, float]]):
     for el in list_:
         out *= el
     return out
+
+
+def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
+
+    # Compile arguments for subprocess.run()
+    args = [sys.executable, path]
+    for k, v in flags.items():
+        args.append(f'--{k}')
+        if v is not None:
+            if isinstance(v, list):
+                for item in v:
+                    args.append(str(item))
+            else:
+                args.append(str(v))
+
+    # Run script, (optionally) raising an error if encountered
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode != 0:
+        if raise_error:
+            raise Exception(result.stderr)
+        else:
+            print(f"Error: {result.stderr}")
+    print(result.stdout)
 
 
 def l2_norm(tensor: torch.Tensor) -> float:

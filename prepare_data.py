@@ -297,17 +297,18 @@ if __name__ == '__main__':
 
     # ---------- MERGE FILES ---------- #
 
+    files = sorted(os.listdir(dir_cov))
     file_types = ['points', 'cov-train', 'cov-valid']
     if args.est_method == 'strat':
         file_types.append('strat')
     for rank in range(args.world_size_est):
         for file_type in file_types:
-            files_to_merge = [f for f in os.listdir(dir_cov) if f.startswith(f'{file_type}-{rank}')]
             tensor_list = []
-            for f in files_to_merge:
-                path = os.path.join(dir_cov, f)
-                tensor_list.append(torch.load(path))
-                remove_file(path)
+            for f in files:
+                if f.startswith(f'{file_type}-{rank}'):
+                    path = os.path.join(dir_cov, f)
+                    tensor_list.append(torch.load(path))
+                    remove_file(path)
             tensor = torch.cat(tensor_list)
             path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
             torch.save(tensor, path)

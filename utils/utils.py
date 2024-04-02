@@ -108,6 +108,10 @@ def safe_l2_normalization(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
+def loss_fcn(preds, cov, num_vars):
+    return torch.sum((preds - cov) ** 2) / num_vars ** 2
+
+
 def get_indices_from_grid_shape(grid_shape: torch.Tensor):
     indices = []
     for sz in grid_shape:

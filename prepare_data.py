@@ -299,7 +299,7 @@ if __name__ == '__main__':
     # ---------- MERGE FILES ---------- #
 
     files = sorted(os.listdir(dir_cov))
-    file_types = ['points', 'cov-train', 'cov-valid']
+    file_types = ['points', 'cov-full', 'cov-train', 'cov-valid']
     if args.est_method == 'strat':
         file_types.append('strat')
     for rank in range(args.world_size_est):

@@ -26,10 +26,8 @@ class LowRankCovariance(nn.Module):
         self.loads.requires_grad_()
         self.loads = nn.Parameter(self.loads)
 
-    def forward(self, idx0, idx1):
-        # loads0 = self.loads[idx0]
-        # loads1 = self.loads[idx1]
-        return (self.loads[idx0] * self.loads[idx1]).sum(dim=1)
+    def forward(self, points):
+        return (self.loads[points[:,0]] * self.loads[points[:,1]]).sum(dim=1)
     
     def get_loads(self, idx=None):
         if idx is None:

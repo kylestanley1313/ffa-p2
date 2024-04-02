@@ -1,6 +1,5 @@
 import argparse
 import os
-import numpy as np
 import sys
 import time
 import torch
@@ -8,7 +7,6 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn as nn
 from functools import partial
-from sklearn.decomposition import PCA
 from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import allreduce_hook
 
 from torch.nn.functional import mse_loss
@@ -18,6 +16,7 @@ from typing import Callable, List, Optional
 
 from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
+from utils.initialization import PCALoadingInitializer
 from utils.utils import (
     create_second_difference_matrix, 
     gen_seeds, 
@@ -32,11 +31,13 @@ from utils.utils import (
 # -------------------- UTILITIES -------------------- #
 
 def penalty(loads: torch.Tensor, diff_mat: torch.Tensor):
-    return torch.trace(loads.t() @ diff_mat @ loads)
+    num_vars, num_facs = loads.shape
+    return torch.trace(loads.t() @ diff_mat @ loads) / num_vars / num_facs
 
 
 def penalty_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
-    return 2 * diff_mat @ loads
+    num_vars, num_facs = loads.shape
+    return 2 * diff_mat @ loads / num_vars / num_facs
 
 
 def objective(
@@ -46,7 +47,7 @@ def objective(
         alpha: float, 
         diff_mat: torch.Tensor
     ):
-    err = mse_loss(preds, cov)
+    err = torch.sum((preds - cov) ** 2) / model.module.num_vars ** 2
     if alpha > 0:
         pen = penalty(model.module.loads, diff_mat)
         return err + alpha * pen
@@ -65,6 +66,7 @@ class LowRankCovariance(nn.Module):
             path_init: Optional[str] = None
         ):
         super().__init__()
+        self.num_vars = num_vars
         self.num_facs = num_facs
         if path_init:
             self.loads = torch.load(path_init)
@@ -515,30 +517,14 @@ if __name__ == '__main__':
         num_vars = multiply_list(args.grid_shape)
         loads = torch.randn(args.num_facs, num_vars, generator=gen, dtype=torch.float64)
     else:
-
-        # Read in (possibly subsampled) data
-        data = []
         dataloader = read_tensors(dir_data, 'data-train')
-        for batch in dataloader:
-            n = len(batch)
-            num_to_keep = int(n * args.init_prop)
-            idx = torch.randperm(n, generator=gen)
-            data_ = batch[idx[:num_to_keep]]
-            data.append(data_)
-        data = torch.cat(data)
-
-        # Prepare PCA estimator
-        seed = gen_seeds(gen, 1)
-        svd_solver = pca_svd_solvers[args.init_method]
-        pca = PCA(args.num_facs, svd_solver=svd_solver, random_state=seed)
-
-        # Initialize loadings then write to file
-        pca.fit(data)
-        loads = np.matmul(
-            np.diag(np.sqrt(pca.singular_values_)),
-            pca.components_
+        initializer = PCALoadingInitializer(
+            pca_svd_solvers[args.init_method], 
+            args.num_facs, 
+            args.init_prop, 
+            gen
         )
-        loads = torch.tensor(loads, dtype=torch.float64)
+        loads = initializer(dataloader)
     torch.save(loads.t(), path_init)
     end = time.time()
     if config.benchmark:
@@ -563,7 +549,7 @@ if __name__ == '__main__':
             args=(
                 rank, args.world_size, path_shared, args.config, dir_out,
                 args.grid_shape, args.num_facs, args.alpha,
-                args.batch_size, args.lr, 5, args.max_epochs, 
+                args.batch_size, args.lr, 40, args.max_epochs, 
                 seeds[rank], train, config.backend
             )
         )

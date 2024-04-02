@@ -72,8 +72,12 @@ def multiply_list(list_: List[Union[int, float]]):
     return out
 
 
-def safe_normalize(tensor: torch.Tensor) -> torch.Tensor:
-    norm = torch.norm(tensor)
+def l2_norm(tensor: torch.Tensor) -> float:
+    return (torch.sqrt(torch.sum(tensor ** 2)) / len(tensor)).item()
+
+
+def safe_l2_normalization(tensor: torch.Tensor) -> torch.Tensor:
+    norm = l2_norm(tensor)
     if norm > 0:
         tensor = tensor / norm
     return tensor

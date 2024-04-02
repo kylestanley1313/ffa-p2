@@ -17,6 +17,7 @@ class LowRankCovariance(nn.Module):
             path_init: Optional[str] = None
         ):
         super().__init__()
+        self.num_vars = num_vars
         self.num_facs = num_facs
         if path_init:
             self.loads = torch.load(path_init)

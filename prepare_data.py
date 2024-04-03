@@ -193,9 +193,10 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
-    parser.add_argument('--dataset', type=str)
+    parser.add_argument('--dir_dataset', type=str)
     parser.add_argument('--est_method', type=str, choices=['strat', 'ddp'])
     parser.add_argument('--dir_out', type=str)
+    parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument(
         '--world_size_est', type=int, 
         help="Number of workers used in downstream estimation."
@@ -212,11 +213,10 @@ if __name__ == '__main__':
     config = load_config(args.config)
 
     # Set directories and paths
-    dir_dataset = os.path.join(config.scratch_root, 'datasets', args.dataset)
-    dir_out = os.path.join('out', args.dir_out)
-    dir_data = os.path.join(config.scratch_root, dir_out, 'data')
-    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
-    dir_bench = os.path.join(dir_out, 'bench')
+    # dir_out = os.path.join('out', args.dir_out)
+    dir_data = os.path.join(args.dir_out_scratch, 'data')
+    dir_cov = os.path.join(args.dir_out_scratch, 'cov')
+    dir_bench = os.path.join(args.dir_out, 'bench')
     other_bench_path = os.path.join(dir_bench, 'other.csv')
     suffix = args.dir_out.split('/')[-1]
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
@@ -228,12 +228,13 @@ if __name__ == '__main__':
         refresh_directory(dir_bench)
 
     # Flatten dataset, getting `grid_shape` and `num_vars` along the way
-    grid_shape = flatten_dataset(dir_dataset, dir_data)
+    grid_shape = flatten_dataset(args.dir_dataset, dir_data)
 
     # Multiprocessing configurations
     mp.set_start_method('spawn')
 
     # ---------- POINT ALLOCATION ---------- #
+    print("Allocating points...")
     allocate_points_fcns = {
         'strat': allocate_points_strat,
         'ddp': allocate_points_ddp
@@ -262,6 +263,7 @@ if __name__ == '__main__':
 
 
     # ---------- DATA SPLITTING ---------- #
+    print("Splitting data...")
 
     gen = torch.Generator().manual_seed(args.seed)
     data_loader = read_tensors(dir_data, 'data')
@@ -280,7 +282,7 @@ if __name__ == '__main__':
         
 
     # ---------- COVARIANCE COMPUTATION ---------- #
-    print(f"Computing covariance...")
+    print("Computing covariance...")
 
     start = time.time()
     points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
@@ -297,6 +299,7 @@ if __name__ == '__main__':
 
 
     # ---------- MERGE FILES ---------- #
+    print("Merging files...")
 
     files = sorted(os.listdir(dir_cov))
     file_types = ['points', 'cov-full', 'cov-train', 'cov-valid']
@@ -313,4 +316,6 @@ if __name__ == '__main__':
             tensor = torch.cat(tensor_list)
             path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
             torch.save(tensor, path)
+
+    print("DONE!")
             

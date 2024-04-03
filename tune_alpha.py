@@ -7,7 +7,7 @@ from utils.utils import execute_script, loss_fcn, read_tensors, refresh_director
 from utils.model import LowRankCovariance
 
 
-ALPHAS = [0, 1, 10, 100, 1000, 10000]
+ALPHAS = [0, 1, 10] # , 100, 1000, 10000]
 
 
 if __name__ == '__main__':
@@ -15,6 +15,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
+    parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--grid_shape', type=int, nargs='+')
     parser.add_argument('--num_facs', type=int)
@@ -35,24 +36,22 @@ if __name__ == '__main__':
     raise_error = not args.silent_fail
 
     # Directory/path preparation
-    dir_out = os.path.join('out', args.dir_out)
-    dir_cov = os.path.join(dir_out, 'cov')
-    path_alpha = os.path.join(dir_out, 'alpha.pt')
-    path_out_mod = os.path.join(dir_out, 'model-train.pth')  # estimation.py output path
-    path_best_mod = os.path.join(dir_out, 'model-train-best.pth')
+    dir_cov = os.path.join(args.dir_out_scratch, 'cov')
+    path_alpha = os.path.join(args.dir_out, 'alpha.pt')
+    path_out_mod = os.path.join(args.dir_out, 'model-train.pth')  # estimation.py output path
+    path_best_mod = os.path.join(args.dir_out, 'model-train-best.pth')
 
     # Estimate model for various alphas
     best_alpha = None
     best_valid_loss = float('inf')
     for alpha in ALPHAS:
 
-        print('HERE')
-
         # Estimate model with current alpha
         path = os.path.join(config.root, f'factor_model_ddp.py')
         flags = {
             'config': args.config,
             'dir_out': args.dir_out,
+            'dir_out_scratch': args.dir_out_scratch,
             'world_size': args.world_size,
             'split': 'train',
             'grid_shape': args.grid_shape,
@@ -79,13 +78,15 @@ if __name__ == '__main__':
             valid_loss += loss_fcn(preds, cov_valid, loads.shape[0])
         print(f"alpha = {alpha} | valid_loss = {valid_loss}")
 
-        # Update best model
-        if valid_loss <= best_valid_loss:
-            best_valid_loss = valid_loss
-            best_alpha = alpha
-            os.rename(path_out_mod, path_best_mod)
-        else: 
-            torch.save(torch.tensor(best_alpha, dtype=torch.float64), path_alpha)
-            os.rename(path_best_mod, path_out_mod)
+        # Break from loop if improvement stops or update best model
+        if valid_loss > best_valid_loss:
             break
+        best_valid_loss = valid_loss
+        best_alpha = alpha
+        os.rename(path_out_mod, path_best_mod)
 
+    # Save best alpha and model-train
+    # NOTE: If improvement occurs for each successive alpha, the last one will
+    # be saved.
+    torch.save(torch.tensor(best_alpha, dtype=torch.float64), path_alpha)
+    os.replace(path_best_mod, path_out_mod)

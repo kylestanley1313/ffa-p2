@@ -1,5 +1,6 @@
 import argparse
 import os
+import torch
 
 from config import load_config
 from utils.utils import execute_script, load_yaml, refresh_directory
@@ -24,15 +25,116 @@ if __name__ == '__main__':
     }
     execute_script(path, flags, raise_error)
 
-    # Prepare output directories
-    #   - setup_simulations.py prepares design directory
-    #   - simulate_data.py prepares datasets directory
-    path = os.path.join(config.root, 'out', args.design)
-    path_scratch = os.path.join(config.scratch_root, 'out', args.design)
-    refresh_directory(path)
-    refresh_directory(path_scratch)
+    # Define design directories
+    dir_dataset_design = os.path.join(config.scratch_root, 'datasets', args.design)
+    dir_out_design = os.path.join(config.root, 'out', args.design)
+    dir_out_design_scratch = os.path.join(config.scratch_root, 'out', args.design)
+    dir_design = os.path.join(config.root, 'designs', args.design)
 
-    # TODO: Handle (variable) seeding for different simulations
+    # Run repetitions for each simulation
+    sim_ids = os.listdir(dir_design)
+    for sim_id in sim_ids:
+        print(f"\n{'====='*8} {sim_id} {'====='*8}\n")
+
+        # Define simulation directories
+        dir_dataset_sim = os.path.join(dir_dataset_design, sim_id)
+        dir_out_sim = os.path.join(dir_out_design, sim_id)
+        dir_out_sim_scratch = os.path.join(dir_out_design_scratch, sim_id)
+        dir_sim = os.path.join(dir_design, sim_id)
+
+        rep_ids = [f.split('.')[0] for f in os.listdir(dir_sim)]
+        for rep_id in rep_ids:
+            print(f"\n{'-----'*8} {rep_id} {'-----'*8}\n")
+
+            # Define repetition directories
+            dir_dataset_rep = os.path.join(dir_dataset_sim, rep_id)
+            dir_out_rep = os.path.join(dir_out_sim, rep_id)
+            dir_out_rep_scratch = os.path.join(dir_out_sim_scratch, rep_id)
+
+            # Load repetition YAML
+            path = os.path.join(dir_sim, f'{rep_id}.yml')
+            repetition = load_yaml(path)
+
+            print(f"\n{'-----'*4} DATA SIMULATION {'-----'*4}\n")
+            path = os.path.join(config.root, 'simulate_data.py')
+            flags = {
+                'config': args.config,
+                'dir': dir_dataset_rep,
+                'grid_shape': repetition['grid_shape'],
+                'load_scheme': repetition['load_scheme'],
+                'err_scheme': repetition['err_scheme'],
+                'num_samps': repetition['num_samps'],
+                'batch_size': int(repetition['num_samps'] / 4)
+            }
+            execute_script(path, flags, raise_error)
+
+            print(f"\n{'-----'*4} DATA PREPARATION {'-----'*4}\n")
+            path = os.path.join(config.root, 'prepare_data.py')
+            flags = {
+                'config': args.config,
+                'dir_dataset': dir_dataset_rep,
+                'est_method': repetition['estimation'],
+                'dir_out': dir_out_rep,
+                'dir_out_scratch': dir_out_rep_scratch,
+                'world_size_est': repetition['world_size_est'],
+                'world_size_cov': repetition['world_size_cov'],
+                'delta': repetition['delta'],
+                'train_prop': repetition['train_prop']
+            }
+            execute_script(path, flags, raise_error)
+
+            print(f"\n{'-----'*4} ALPHA TUNING {'-----'*4}\n")
+            path = os.path.join(config.root, 'tune_alpha.py')
+            flags = {
+                'config': args.config,
+                'dir_out': dir_out_rep,
+                'dir_out_scratch': dir_out_rep_scratch,
+                'world_size': repetition['world_size_est'],
+                'grid_shape': repetition['grid_shape'],
+                'num_facs': repetition['num_facs'],
+                'delta': repetition['delta'],
+                'init_method': repetition['init_method'],
+                'init_prop': repetition['init_prop'],
+                'batch_size': repetition['batch_size'],
+                'lr': repetition['lr'],
+                'max_epochs': repetition['max_epochs'],
+                'seed': repetition['seed'],
+            }
+            execute_script(path, flags, raise_error)
+            path = os.path.join(dir_out_rep, 'alpha.pt')
+            alpha = torch.load(path).item()
+
+            print(f"\n{'-----'*4} ESTIMATION (alpha = {alpha}) {'-----'*4}\n")
+            path = os.path.join(config.root, 'factor_model_ddp.py')  # TODO: STRAT handling
+            flags = {
+                'config': args.config,
+                'dir_out': dir_out_rep,
+                'dir_out_scratch': dir_out_rep_scratch,
+                'world_size': repetition['world_size_est'],
+                'split': 'full',
+                'grid_shape': repetition['grid_shape'],
+                'num_facs': repetition['num_facs'],
+                'alpha': alpha,
+                'delta': repetition['delta'],
+                'init_method': repetition['init_method'],
+                'init_prop': repetition['init_prop'],
+                'batch_size': repetition['batch_size'],
+                'lr': repetition['lr'],
+                'max_epochs': repetition['max_epochs'],
+                'seed': repetition['seed'],
+            }
+            execute_script(path, flags, raise_error)
+
+            print(f"\n{'-----'*4} ROTATION {'-----'*4}\n")
+
+            print(f"\n{'-----'*4} KAPPA TUNING {'-----'*4}\n")
+
+            print(f"\n{'-----'*4} SHRINKAGE {'-----'*4}\n")
+
+            print(f"\n{'-----'*4} EVALUATION {'-----'*4}\n")
+
+
+    exit(0)
 
     # Run each simulation
     dir_design = os.path.join(config.root, 'designs', args.design)

@@ -12,7 +12,7 @@ from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import allreduce_
 from torch.nn.functional import mse_loss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, Sampler
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
@@ -279,7 +279,14 @@ def process_epoch(model, dataloader, loss_fcn, penalty_fcn, optimizer):
 #     dist.destroy_process_group()
 
 
-def compute_loss_penalty(model, dataloader, loss_fcn, penalty_fcn, rank, world_size):
+def compute_loss_penalty(
+        model, 
+        dataloader, 
+        loss_fcn, 
+        penalty_fcn, 
+        rank, 
+        world_size
+    ) -> Tuple[torch.Tensor]:
 
     dataset = dataloader.dataset
     preds = model(dataset.points)
@@ -306,6 +313,7 @@ def init_process(
         path_shared: str,
         config: str,
         dir_out: str,
+        dir_out_scratch: str,
         split: str,
         grid_shape: List[int],
         num_facs: int, 
@@ -324,7 +332,8 @@ def init_process(
         rank=rank, world_size=world_size
     )
     fcn(
-        rank, world_size, config, dir_out,
+        rank, world_size, config, 
+        dir_out, dir_out_scratch,
         split, grid_shape, num_facs, alpha,
         batch_size, lr, tol, patience, max_epochs, seed
     )
@@ -335,6 +344,7 @@ def train(
         world_size: int, 
         config: str,
         dir_out: str,
+        dir_out_scratch: str,
         split: str,
         grid_shape: List[int], 
         num_facs: int, 
@@ -352,7 +362,7 @@ def train(
     gen = torch.Generator().manual_seed(seed)
     
     # Set directories
-    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
+    dir_cov = os.path.join(dir_out_scratch, 'cov')
     dir_bench = os.path.join(dir_out, 'bench')
 
     # Get benchmarking wrappers
@@ -384,9 +394,10 @@ def train(
     penalty_fcn_ = partial(penalty_fcn, alpha=alpha, diff_mat=diff_mat)
 
     path_model = os.path.join(dir_out, f'model-{split}.pth')
-    best_criterion = float('inf')
+    last_criterion = float('inf')
     epochs_waited = 0
     early_stop = torch.tensor(False)
+    diverged = torch.tensor(False)
     # prev_train_loss = float('inf')
     lr = torch.tensor(lr)
     for epoch in range(max_epochs):
@@ -401,21 +412,22 @@ def train(
         # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
             criterion = loss + penalty
-            print(f"epoch = {epoch + 1} | objective = {criterion}")
+            print(f"epoch = {epoch + 1} | objective = {criterion.item()}")
 
-            # Early stopping
-            # TODO: Save best model without writing
-            if criterion < best_criterion - tol:
-                best_criterion = criterion
-                state_dict = model.state_dict()
-                state_dict['loads'] = state_dict.pop('module.loads')  # replace DDP key
-                torch.save(state_dict, path_model)
-                epochs_waited = 0
-            else: 
-                epochs_waited += 1
-                if epochs_waited >= patience: 
-                    print(f"Early stopping after {epoch + 1} epochs.")
-                    early_stop = torch.tensor(True)
+            # Handle divergence
+            if torch.isnan(criterion) or torch.isinf(criterion):
+                diverged = torch.tensor(True)
+
+            else:
+                # Handle early stopping
+                if abs(criterion - last_criterion) > tol:
+                    epochs_waited = 0
+                else: 
+                    epochs_waited += 1
+                    if epochs_waited >= patience: 
+                        print(f"Early stopping after {epoch + 1} epochs.")
+                        early_stop = torch.tensor(True)
+                last_criterion = criterion
 
             # Update learning rate via bold driver
             # TODO: How to handle lr updates? Fixed?
@@ -423,11 +435,27 @@ def train(
 
         # Communicate early_stop and lr to non-zero ranks
         dist.barrier()
+        dist.broadcast(diverged, 0)
         dist.broadcast(early_stop, 0)
-        if early_stop:
+        if diverged or early_stop:
             break
-        dist.broadcast(lr, 0)
-        optimizer.param_groups[0]['lr'] = lr.item()
+        # dist.broadcast(lr, 0)
+        # optimizer.param_groups[0]['lr'] = lr.item()
+
+    # TODO: Consider using exit codes to handle divergence/no-convergence/etc. at script level
+    if rank == 0:
+
+        if diverged: 
+            print(f"Error: Divergence after {epoch + 1} epochs.")
+
+        else: 
+            if not early_stop:
+                print(f"Warning: No convergence after {epoch + 1} epochs.")
+            
+            # Save model (even if no convergence)
+            state_dict = model.state_dict()
+            state_dict['loads'] = state_dict.pop('module.loads')  # replace DDP key
+            torch.save(state_dict, path_model)
 
     dist.destroy_process_group()
 
@@ -437,6 +465,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
+    parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
     parser.add_argument('--grid_shape', type=int, nargs='+')
@@ -458,12 +487,11 @@ if __name__ == '__main__':
     config = load_config(args.config)
 
     # Set directories and paths
-    dir_out = os.path.join('out', args.dir_out)
-    dir_data = os.path.join(config.scratch_root, dir_out, 'data')
-    dir_cov = os.path.join(config.scratch_root, dir_out, 'cov')
-    dir_bench = os.path.join(dir_out, 'bench')
-    path_init = os.path.join(dir_out, 'init_loads.pt')
-    path_model = os.path.join(dir_out, f'model-{args.split}.pth')
+    dir_data = os.path.join(args.dir_out_scratch, 'data')
+    dir_cov = os.path.join(args.dir_out_scratch, 'cov')
+    dir_bench = os.path.join(args.dir_out, 'bench')
+    path_init = os.path.join(args.dir_out, 'init_loads.pt')
+    path_model = os.path.join(args.dir_out, f'model-{args.split}.pth')
     other_bench_path = os.path.join(dir_bench, 'other.csv')
     
     # Seeding
@@ -513,17 +541,17 @@ if __name__ == '__main__':
     # else: 
     #     run_fcn = train
 
-    suffix = args.dir_out.split('/')[-1]
-    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
+    path_shared = os.path.join(config.dir_shared, f'shared_{args.seed}')
     remove_file(path_shared)
     processes = []
     for rank in range(args.world_size):
         p = mp.Process(
             target=init_process, 
             args=(
-                rank, args.world_size, path_shared, args.config, dir_out,
+                rank, args.world_size, path_shared, args.config, 
+                args.dir_out, args.dir_out_scratch,
                 args.split, args.grid_shape, args.num_facs, args.alpha,
-                args.batch_size, args.lr, 1e-3, 10, args.max_epochs, # TODO: Parameterize tolerance and patience
+                args.batch_size, args.lr, 1e-1, 5, args.max_epochs, # TODO: Parameterize tolerance and patience
                 seeds[rank], train, config.backend
             )
         )

@@ -89,7 +89,7 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
 
     # Run script, (optionally) raising an error if encountered
     result = subprocess.run(args, capture_output=True, text=True)
-    if result.returncode != 0:
+    if len(result.stderr) > 0:
         if raise_error:
             raise Exception(result.stderr)
         else:

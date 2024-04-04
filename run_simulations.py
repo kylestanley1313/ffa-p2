@@ -126,6 +126,12 @@ if __name__ == '__main__':
             execute_script(path, flags, raise_error)
 
             print(f"\n{'-----'*4} ROTATION {'-----'*4}\n")
+            path = os.path.join(config.root, 'rotate.py')  # TODO: STRAT handling
+            flags = {
+                'config': args.config,
+                'dir_out': dir_out_rep
+            }
+            execute_script(path, flags, raise_error)
 
             print(f"\n{'-----'*4} KAPPA TUNING {'-----'*4}\n")
 

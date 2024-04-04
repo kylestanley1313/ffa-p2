@@ -8,6 +8,8 @@ import torch
 import yaml
 from typing import Dict, Generator, List, Union
 
+from utils.model import LowRankCovariance
+
 
 
 # -------------------- MISCELLANEOUS -------------------- #
@@ -110,6 +112,23 @@ def safe_l2_normalization(tensor: torch.Tensor) -> torch.Tensor:
 
 def loss_fcn(preds, cov, num_vars):
     return torch.sum((preds - cov) ** 2) / num_vars ** 2
+
+
+def compute_loss(model, dir_cov, split):
+    num_vars = model.loads.shape[0]
+    points_loader = read_tensors(dir_cov, 'points')
+    cov_loader = read_tensors(dir_cov, f'cov-{split}')
+    loss = 0
+    for points, cov in zip(points_loader, cov_loader):
+        preds = model(points)
+        loss += loss_fcn(preds, cov, num_vars)
+    return loss
+
+
+def model_from_loads(loads):
+    model = LowRankCovariance(loads.shape[0], loads.shape[1])
+    model.set_loads(loads)
+    return model
 
 
 def get_indices_from_grid_shape(grid_shape: torch.Tensor):

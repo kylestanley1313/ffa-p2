@@ -126,16 +126,20 @@ if __name__ == '__main__':
             execute_script(path, flags, raise_error)
 
             print(f"\n{'-----'*4} ROTATION {'-----'*4}\n")
-            path = os.path.join(config.root, 'rotate.py')  # TODO: STRAT handling
+            path = os.path.join(config.root, 'rotate.py')
             flags = {
                 'config': args.config,
                 'dir_out': dir_out_rep
             }
             execute_script(path, flags, raise_error)
 
-            print(f"\n{'-----'*4} KAPPA TUNING {'-----'*4}\n")
-
             print(f"\n{'-----'*4} SHRINKAGE {'-----'*4}\n")
+            path = os.path.join(config.root, 'shrink.py')
+            flags = {
+                'config': args.config,
+                'dir_out': dir_out_rep
+            }
+            execute_script(path, flags, raise_error)
 
             print(f"\n{'-----'*4} EVALUATION {'-----'*4}\n")
 

@@ -3,7 +3,13 @@ import os
 import torch
 
 from config import load_config
-from utils.utils import execute_script, loss_fcn, read_tensors, refresh_directory
+from utils.utils import (
+    compute_loss,
+    execute_script, 
+    loss_fcn, 
+    model_from_loads,
+    read_tensors
+)
 from utils.model import LowRankCovariance
 
 
@@ -68,14 +74,8 @@ if __name__ == '__main__':
 
         # Compute validation loss
         loads = torch.load(path_out_mod)['loads']
-        model = LowRankCovariance(loads.shape[0], loads.shape[1])
-        model.set_loads(loads)
-        points_loader = read_tensors(dir_cov, 'points')
-        cov_valid_loader = read_tensors(dir_cov, 'cov-valid')
-        valid_loss = 0
-        for points, cov_valid in zip(points_loader, cov_valid_loader):
-            preds = model(points)
-            valid_loss += loss_fcn(preds, cov_valid, loads.shape[0])
+        model = model_from_loads(loads)
+        valid_loss = compute_loss(model, dir_cov, 'valid')
         print(f"alpha = {alpha} | valid_loss = {valid_loss}")
 
         # Break from loop if improvement stops or update best model

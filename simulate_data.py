@@ -328,8 +328,8 @@ class CornerPairLoading2D1(LoadingFunction):
 
     ndim = 2
     pieces = [
-        BumpFunction2D([0.25, 0.25], 0, [0.15, 0.15], 1),
-        BumpFunction2D([0.75, 0.75], 0, [0.15, 0.15], 1),
+        BumpFunction2D([0.25, 0.25], 0, [0.25, 0.25], 1),
+        BumpFunction2D([0.75, 0.75], 0, [0.25, 0.25], 1),
     ]
 
 
@@ -337,25 +337,74 @@ class CornerPairLoading2D2(LoadingFunction):
 
     ndim = 2
     pieces = [
-        BumpFunction2D([0.25, 0.75], 0, [0.15, 0.15], 1),
-        BumpFunction2D([0.75, 0.25], 0, [0.15, 0.15], 1),
-    ]
-
-class CornerPairLoading2D3(LoadingFunction):
-
-    ndim = 2
-    pieces = [
-        BumpFunction2D([0.25, 0.25], 0, [0.25, 0.25], 1),
-        BumpFunction2D([0.75, 0.75], 0, [0.25, 0.25], 1),
-    ]
-
-
-class CornerPairLoading2D4(LoadingFunction):
-
-    ndim = 2
-    pieces = [
         BumpFunction2D([0.25, 0.75], 0, [0.25, 0.25], 1),
         BumpFunction2D([0.75, 0.25], 0, [0.25, 0.25], 1),
+    ]
+
+
+class EdgePairLoading2D1(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.25, 0.5], 0, [0.25, 0.25], 1),
+        BumpFunction2D([0.75, 0.5], 0, [0.25, 0.25], 1),
+    ]
+
+
+class EdgePairLoading2D2(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.5, 0.75], 0, [0.25, 0.25], 1),
+        BumpFunction2D([0.5, 0.25], 0, [0.25, 0.25], 1),
+    ]
+
+
+class DefaultNetLoading2D(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D(center=[0.5, 0.25], rotation=0, scale=[0.1, 0.15], max=1),
+        BumpFunction2D(center=[0.3, 0.1], rotation=30, scale=[0.05, 0.1], max=1),
+        BumpFunction2D(center=[0.7, 0.1], rotation=-30, scale=[0.05, 0.1], max=1),
+        BumpFunction2D(center=[0.5, 0.9], rotation=0, scale=[0.1, 0.05], max=0.5),
+        BumpFunction2D(center=[0.4, 0.8], rotation=0, scale=[0.05, 0.05], max=0.5),
+        BumpFunction2D(center=[0.6, 0.8], rotation=0, scale=[0.05, 0.05], max=0.5),
+    ]
+
+
+class ExecutiveNetLoading2D(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D(center=[0.5, 0.8], rotation=0, scale=[0.1, 0.15], max=1),
+        BumpFunction2D(center=[0.4, 0.8], rotation=45, scale=[0.15, 0.1], max=1),
+        BumpFunction2D(center=[0.6, 0.8], rotation=-45, scale=[0.15, 0.1], max=1),
+        BumpFunction2D(center=[0.5, 0.5], rotation=0, scale=[0.05, 0.05], max=0.5),
+        BumpFunction2D(center=[0.8, 0.35], rotation=0, scale=[0.05, 0.05], max=0.5),
+        BumpFunction2D(center=[0.2, 0.35], rotation=0, scale=[0.05, 0.05], max=0.5),
+        BumpFunction2D(center=[0.55, 0.1], rotation=0, scale=[0.05, 0.05], max=0.5),
+        BumpFunction2D(center=[0.45, 0.1], rotation=0, scale=[0.05, 0.05], max=0.5),
+    ]
+
+
+class RightVisualNetLoading2D(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D(center=[0.3, 0.25], rotation=30, scale=[0.15, 0.25], max=1),
+        BumpFunction2D(center=[0.35, 0.8], rotation=-30, scale=[0.15, 0.25], max=1),
+        BumpFunction2D(center=[0.7, 0.25], rotation=30, scale=[0.15, 0.1], max=0.7),
+    ]
+
+
+class LeftVisualNetLoading2D(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D(center=[0.7, 0.25], rotation=-30, scale=[0.15, 0.25], max=1),
+        BumpFunction2D(center=[0.65, 0.8], rotation=30, scale=[0.15, 0.25], max=1),
+        BumpFunction2D(center=[0.3, 0.25], rotation=-30, scale=[0.15, 0.1], max=0.7),
     ]
 
 
@@ -441,46 +490,71 @@ class LoadingScheme(ABC):
         return all(d == self.ndim for d in ndims)
     
 
-class TrigLoadingScheme1D1(LoadingScheme):
+class TrigLoadingScheme1D2K(LoadingScheme):
 
     ndim = 1
     loading_fcns = [
         SineLoading1D, 
         CosineLoading1D
     ]
-    scales = [2, 0.9]
+    scales = [1, 1]
 
 
-class BumpLoadingScheme1D1(LoadingScheme):
+class BumpLoadingScheme1D2K(LoadingScheme):
 
     ndim = 1
     loading_fcns = [
         BumpPairLoading1D1, 
         BumpPairLoading1D2
     ]
-    scales = [2, 1]
+    scales = [1, 1]
 
 
-class BumpLoadingScheme2D1(LoadingScheme):
+class BumpLoadingScheme2D2K(LoadingScheme):
 
     ndim = 2
     loading_fcns = [
         CornerPairLoading2D1, 
         CornerPairLoading2D2
     ]
-    scales = [3, 2]
+    scales = [1, 1]
 
-class BumpLoadingScheme2D2(LoadingScheme):
+
+class BumpLoadingScheme2D4K(LoadingScheme):
 
     ndim = 2
     loading_fcns = [
-        CornerPairLoading2D3,
-        CornerPairLoading2D4
+        CornerPairLoading2D1, 
+        CornerPairLoading2D2,
+        EdgePairLoading2D1,
+        EdgePairLoading2D2
     ]
-    scales = [2, 1]
+    scales = [1, 1, 1, 1]
+
+
+class NetLoadingScheme2D2K(LoadingScheme):
+
+    ndim = 2
+    loading_fcns = [
+        DefaultNetLoading2D,
+        ExecutiveNetLoading2D,
+    ]
+    scales = [1, 1]
+
+
+class NetLoadingScheme2D4K(LoadingScheme):
+
+    ndim = 2
+    loading_fcns = [
+        DefaultNetLoading2D,
+        ExecutiveNetLoading2D,
+        RightVisualNetLoading2D,
+        LeftVisualNetLoading2D,
+    ]
+    scales = [1, 1, 1, 1]
         
 
-class BumpLoadingScheme3D1(LoadingScheme):
+class BumpLoadingScheme3D4K(LoadingScheme):
 
     ndim = 3
     loading_fcns = [
@@ -489,15 +563,15 @@ class BumpLoadingScheme3D1(LoadingScheme):
         CornerPairLoading3D3,
         CornerPairLoading3D4
     ]
-    scales = [2, 2, 2, 2]
+    scales = [1, 1, 1, 1]
 
 
 LOADING_SCHEMES = {
-    'TrigScheme1D1': TrigLoadingScheme1D1,
-    'BumpScheme1D1': BumpLoadingScheme1D1,
-    'BumpScheme2D1': BumpLoadingScheme2D1,
-    'BumpScheme2D2': BumpLoadingScheme2D2,
-    'BumpScheme3D1': BumpLoadingScheme3D1,
+    'TrigScheme1D2K': TrigLoadingScheme1D2K,
+    'BumpScheme1D2K': BumpLoadingScheme1D2K,
+    'BumpScheme2D2K': BumpLoadingScheme2D2K,
+    'BumpScheme2D4K': BumpLoadingScheme2D4K,
+    'BumpScheme3D4K': BumpLoadingScheme3D4K,
 }
 
 

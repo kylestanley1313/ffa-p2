@@ -1,5 +1,4 @@
 import argparse
-import os
 import math
 import numpy as np
 import torch
@@ -7,14 +6,13 @@ from abc import ABC, abstractmethod
 from functools import partial
 from scipy.interpolate import BSpline
 from skfda.representation.basis import Basis, BSplineBasis, TensorBasis
-from typing import Callable, List, Union
+from typing import Callable, Generator, List, Union
 
 from config import load_config
 from utils.utils import (
     gen_seeds,
     refresh_directory, 
     safe_l2_normalization, 
-    slice_sparse_coo_tensor,
     write_generated_tensor
 )
 
@@ -212,21 +210,21 @@ def squared_exponential_kernel(dist, length):
 
 def build_factors(
         grid: torch.Tensor, 
-        num_facs: int, 
+        n_facs: int, 
         kernel: Callable, 
         gen: torch.Generator
     ):
-    """Simulate `num_facs` functional factors from a Gaussian Process defined
+    """Simulate `n_facs` functional factors from a Gaussian Process defined
     by `kernel`.
 
     Args:
         grid (torch.Tensor): Temporal grid on which to simulate factors.
-        num_facs (int): Number of factors to simulate.
+        n_facs (int): Number of factors to simulate.
         kernel (Callable): Kernel defining the GP.
         gen (torch.Generator): PyTorch generator.
 
     Returns:
-        torch.Tensor: A `sz_time`-by-`num_facs` tensor of factors.
+        torch.Tensor: A `sz_time`-by-`n_facs` tensor of factors.
     """
 
     # NOTE: Annoyingly, PyTorch does not allow you to sample from a MVN using
@@ -234,26 +232,29 @@ def build_factors(
     # we need to get a NumPy generator from a PyTorch generator. 
     gen = np.random.default_rng(gen_seeds(gen, 1))
 
-    facs = torch.zeros((num_facs, len(grid)))
+    facs = torch.zeros((n_facs, len(grid)))
     mean = torch.zeros(len(grid))
     temp1, temp2 = torch.meshgrid(grid, grid, indexing='ij')
     dists = torch.abs(temp1 - temp2)
     cov = kernel(dists)
-    for k in range(num_facs):
+    for k in range(n_facs):
         temp = gen.multivariate_normal(mean.numpy(), cov.numpy())  # convert tensors to ndarrays
         facs[k] = torch.tensor(temp)
     return facs.t()
 
 
 FACTOR_KERNELS = {
-    'SqExp100': partial(squared_exponential_kernel, length=0.100),  # Smooth
-    'SqExp050': partial(squared_exponential_kernel, length=0.050),
-    'SqExp040': partial(squared_exponential_kernel, length=0.040),
-    'SqExp030': partial(squared_exponential_kernel, length=0.030),
-    'SqExp020': partial(squared_exponential_kernel, length=0.020),
-    'SqExp010': partial(squared_exponential_kernel, length=0.010),
-    'SqExp001': partial(squared_exponential_kernel, length=0.001)   # Rough
+    'SqExp1000': partial(squared_exponential_kernel, length=0.1000),  # Smooth
+    'SqExp0500': partial(squared_exponential_kernel, length=0.0500),
+    'SqExp0400': partial(squared_exponential_kernel, length=0.0400),
+    'SqExp0300': partial(squared_exponential_kernel, length=0.0300),
+    'SqExp0200': partial(squared_exponential_kernel, length=0.0200),
+    'SqExp0100': partial(squared_exponential_kernel, length=0.0100),
+    'SqExp0050': partial(squared_exponential_kernel, length=0.0050),
+    'SqExp0010': partial(squared_exponential_kernel, length=0.0010),
+    'SqExp0001': partial(squared_exponential_kernel, length=0.0001),  # Rough
 }
+
 
 
 # ==================== LOADINGS ==================== #
@@ -817,7 +818,7 @@ class BSpline_Bump1D_ErrorScheme(ErrorScheme):
         fcn_set_time = TemporalErrorBSplineFcnSet(
             domain_range=[0, 1], 
             n_basis=10, 
-            n_basis_base=40,
+            n_basis_base=50,  # NOTE: This controls temporal wiggliness
             gen=gen_np
         )
         fcn_set_space = SpatialErrorBump1DFcnSet(
@@ -943,6 +944,18 @@ def build_loadings(
     return loads
 
 
+def gen_factors(
+        kernel: Callable, 
+        n_facs: int, 
+        points: torch.Tensor, 
+        n_samps: int, 
+        gen: torch.Generator
+    ):
+    """Yields n_samps factor tensors."""
+    for _ in range(n_samps):
+        yield build_factors(points, n_facs, kernel, gen)
+
+
 def build_errors(
         indices: torch.Tensor,
         sz: List[int],
@@ -969,61 +982,33 @@ def build_errors(
 
 def simulate_ffm_data(
         loads: torch.Tensor,
-        facs: torch.Tensor,
+        fac_gen: Generator,
         err: torch.sparse.Tensor, 
         prop_global: float,
-        batch_size: int,
         gen: torch.Generator = torch.Generator(),
     ):
 
-    def _gen_global_local_batches():
-        curr_time = 0
-        while curr_time < sz_time: 
-            n_batch = min(batch_size, sz_time - curr_time) 
-            facs_batch = facs[curr_time:(curr_time + n_batch)]
-            comp_global = basis_expansion(loads, facs_batch, ndim_space)
-            comp_local = torch.sum(
-                slice_sparse_coo_tensor(
-                    err, dim=1, 
-                    start=curr_time, 
-                    stop=curr_time + n_batch
-                ),
-                dim=0
-            )
-            yield comp_global, comp_local
-            curr_time += n_batch
-
     # Extract constants
     sz_space = loads.shape[1:]
-    sz_time = facs.shape[0]
     ndim_space = len(sz_space)
-    n_err_fcns = err.shape[0]
+    n_err_fcns = err.size(0)
 
-    # Scale error functions
-    err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
-    err *= err_coeffs.view(n_err_fcns, 1, *[1]*ndim_space)
+    # Generate samples
+    for facs in fac_gen: 
 
-    # Compute global and local l2 norms
-    global_frob = 0
-    local_frob = 0
-    global_numel = 0
-    local_numel = 0
-    for comp_global, comp_local in _gen_global_local_batches():
-        global_frob += torch.sum(comp_global ** 2).item()
-        global_numel += torch.numel(comp_global)
-        local_frob += torch.sum(comp_local ** 2).item()
-        local_numel += torch.numel(comp_local)
-    norm_global = math.sqrt(global_frob / global_numel)
-    norm_local = math.sqrt(local_frob / local_numel)
+        # Compute global component 
+        comp_global = basis_expansion(loads, facs, ndim_space)
 
+        # Generate error function coefficients, then compute local component
+        err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
+        err_ = err.clone()
+        err_ *= err_coeffs.view(n_err_fcns, 1, *[1]*ndim_space)
+        comp_local = torch.sum(err_, dim=0)
 
-    # Yield data in desired global-to-local ratio
-    for comp_global, comp_local in _gen_global_local_batches():
-        comp_global /= norm_global
-        comp_global *= prop_global
-        comp_local /= norm_local
-        comp_local *= (1 - prop_global)
-        yield comp_global + comp_local
+        yield (
+            safe_l2_normalization(comp_global) * prop_global + 
+            safe_l2_normalization(comp_local) * (1 - prop_global)
+        )
 
 
 
@@ -1048,6 +1033,10 @@ if __name__ == '__main__':
         help="Shape of the spatial grid on which to simulate data."
     )
     parser.add_argument(
+        '--n_samps', type=int,
+        help="Number of samples to simulate."
+    )
+    parser.add_argument(
         '--factor_kernel', type=str,
         help="Kernel to use when simulating factors from MVN."
     )
@@ -1066,10 +1055,6 @@ if __name__ == '__main__':
     parser.add_argument(
         '--prop_global', type=float,
         help="Proportion of observations coming from global component."
-    )
-    parser.add_argument(
-        '--batch_size', type=int,
-        help="Maximum number of samples per output file."
     )
     parser.add_argument(
         '--seed', default=12345, type=int,
@@ -1128,12 +1113,12 @@ if __name__ == '__main__':
 
     # Build factor tensor
     print("Preparing factors...")
-    num_facs = len(load_scheme.loading_fcns)
+    n_facs = len(load_scheme.loading_fcns)
     kernel = FACTOR_KERNELS[args.factor_kernel]
-    facs = build_factors(points_time, num_facs, kernel, gen)  # sz_time-by-n_facs
+    fac_gen = gen_factors(kernel, n_facs, points_time, args.n_samps, gen)
 
     # Build error tensor
-    # TODO: Is there a way to accelerate error generation? Currenlty much slower
+    # TODO: Is there a way to accelerate error generation? Currently much slower
     # than loading/factor generation. Cache error schemes?
     print("Preparing errors....")
     vals = err_scheme(points)  # n_fcns-by-sz_time-by-sz_shape (sparse)
@@ -1145,10 +1130,9 @@ if __name__ == '__main__':
     print("Simulating new data...")
     dataloader = simulate_ffm_data(
         loads, 
-        facs,
+        fac_gen,
         errs,
         args.prop_global,
-        batch_size=args.batch_size,
         gen=gen
     )
     write_generated_tensor(dataloader, args.dir, 'data-full')

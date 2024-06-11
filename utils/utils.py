@@ -1,5 +1,6 @@
 import csv
 import math
+import numpy as np
 import os
 import shutil
 import subprocess
@@ -99,15 +100,22 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
     print(result.stdout)
 
 
-def l2_norm(tensor: torch.Tensor) -> float:
-    return (torch.sqrt(torch.sum(tensor ** 2)) / len(tensor)).item()
+def l2_norm(input: Union[torch.Tensor, np.ndarray]) -> float:
+    if isinstance(input, torch.Tensor):
+        return (torch.sqrt(torch.sum(input ** 2) / torch.numel(input))).item()
+    elif isinstance(input, np.ndarray):
+        return np.sqrt(np.sum(input ** 2) / input.size)
+    else: 
+        raise TypeError("Input must be a torch.Tensor or a np.ndarray")
 
 
-def safe_l2_normalization(tensor: torch.Tensor) -> torch.Tensor:
-    norm = l2_norm(tensor)
+def safe_l2_normalization(
+        input: Union[torch.Tensor, np.ndarray]
+    ) -> Union[torch.Tensor, np.ndarray]:
+    norm = l2_norm(input)
     if norm > 0:
-        tensor = tensor / norm
-    return tensor
+        input = input / norm
+    return input
 
 
 def loss_fcn(preds, cov, num_vars):
@@ -242,6 +250,34 @@ class ReshapingIndexMap(object):
 
 
 # -------------------- SPARSE MATRICES -------------------- #
+        
+def slice_sparse_coo_tensor(
+        tensor: torch.Tensor, 
+        dim: int, 
+        start: int, 
+        stop: int
+    ) -> torch.Tensor:
+
+    # Extract relevant information from full tensor
+    tensor = tensor.coalesce()
+    indices = tensor.indices()
+    values = tensor.values()
+    new_sz = list(tensor.size())
+
+    # Filter indices for desired slice range
+    mask = (indices[dim] >= start) & (indices[dim] < stop)
+    new_indices = indices[:, mask]
+    new_values = values[mask]
+
+    # Adjust indices and shape for sliced range
+    new_indices[dim] -= start
+    new_sz[dim] = stop - start
+
+    return torch.sparse_coo_tensor(
+        indices=new_indices,
+        values=new_values,
+        size=new_sz
+    )
 
 
 OFF_DIAG_SHIFTS = {
@@ -351,64 +387,6 @@ def create_second_difference_matrix(grid_shape):
     )
                 
     return diff_mat
-
-
-# def create_identity_matrix(grid_shape):
-#     """Creates a square matricized identity tensor for `grid_shape`."""
-
-#     num_vars = multiply_list(grid_shape)
-#     idx = torch.zeros()
-
-
-#     # Over-allocate memory for `idx` and `vals`.
-#     # Note that each interior diag cell touches 3^d - 1 off-diag cells.
-#     ndim = len(grid_shape)
-#     num_vars = multiply_list(grid_shape)
-#     fill_val = -2
-#     idx = torch.full((2, num_vars * 3 ** ndim), fill_val, dtype=torch.int32)
-#     vals = torch.full((num_vars * 3 ** ndim,), fill_val, dtype=torch.float64)
-
-#     # Build `idx` and `vals`
-#     idx_map = ReshapingIndexMap(grid_shape + grid_shape, [num_vars, num_vars])
-#     idx_grid = get_indices_from_grid_shape(grid_shape)
-#     diag_val = 3 ** ndim - 1
-#     off_diag_shifts = OFF_DIAG_SHIFTS[ndim]
-#     cnt = 0
-#     for i in range(len(idx_grid)):
-
-#         # Get `base_idx`
-#         base_idx = idx_grid[i]
-#         if ndim == 1:
-#             base_idx = base_idx.reshape(1)        
-
-#         # Add diagonal
-#         diag_idx = torch.cat((base_idx, base_idx))
-#         idx[:,cnt] = idx_map.map(diag_idx)
-#         vals[cnt] = diag_val
-#         cnt += 1
-
-#         # Add off-diagonals
-#         for shift in off_diag_shifts:
-
-#             shift_idx = base_idx - shift
-#             interior = torch.all(
-#                 (shift_idx >= torch.zeros(ndim)) &
-#                 (shift_idx < torch.tensor(grid_shape))
-#             )
-#             if interior:
-#                 off_diag_idx = torch.cat((base_idx, shift_idx))
-#                 idx[:,cnt] = idx_map.map(off_diag_idx)
-#                 vals[cnt] = -1
-#                 cnt += 1
-
-#     # Create sparse matrix
-#     diff_mat = torch.sparse_coo_tensor(
-#         indices=idx[:,:cnt], 
-#         values=vals[:cnt],
-#         size=[num_vars, num_vars]
-#     )
-                
-#     return diff_mat
 
 
 

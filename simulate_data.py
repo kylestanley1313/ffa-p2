@@ -1,20 +1,27 @@
 import argparse
+import itertools
 import math
 import numpy as np
 import torch
 from abc import ABC, abstractmethod
 from functools import partial
-from scipy.interpolate import BSpline
-from skfda.representation.basis import Basis, BSplineBasis, TensorBasis
-from typing import Callable, Generator, List, Union
+from scipy.interpolate import BSpline, splrep
+from typing import Callable, Generator, List, Sequence, Union
 
 from config import load_config
 from utils.utils import (
     gen_seeds,
+    multiply_list,
     refresh_directory, 
     safe_l2_normalization, 
+    slice_sparse_coo_tensor,
     write_generated_tensor
 )
+
+DomainRange = Union[
+    Sequence[float],
+    Sequence[Sequence[float]]
+]
 
 
 # ==================== UTILITIES ==================== #
@@ -200,59 +207,50 @@ def bspline_basis_fcns(
         fcns.append(basis)
     
     return fcns
-    
 
-# ==================== FACTORS ==================== #
 
 def squared_exponential_kernel(dist, length):
     return torch.exp(-dist ** 2 / 2 / length ** 2)
 
 
-def build_factors(
+def simulate_gauss_procs(
         grid: torch.Tensor, 
-        n_facs: int, 
+        n_procs: int, 
         kernel: Callable, 
-        gen: torch.Generator
+        gen: torch.Generator,
+        gamma: float = 1e-5
     ):
-    """Simulate `n_facs` functional factors from a Gaussian Process defined
-    by `kernel`.
 
-    Args:
-        grid (torch.Tensor): Temporal grid on which to simulate factors.
-        n_facs (int): Number of factors to simulate.
-        kernel (Callable): Kernel defining the GP.
-        gen (torch.Generator): PyTorch generator.
-
-    Returns:
-        torch.Tensor: A `sz_time`-by-`n_facs` tensor of factors.
-    """
-
-    # NOTE: Annoyingly, PyTorch does not allow you to sample from a MVN using
-    # a Generator. Thankfully, NumPy does, so we use its function. To do so, 
-    # we need to get a NumPy generator from a PyTorch generator. 
-    gen = np.random.default_rng(gen_seeds(gen, 1))
-
-    facs = torch.zeros((n_facs, len(grid)))
-    mean = torch.zeros(len(grid))
+    # Get covariance
     temp1, temp2 = torch.meshgrid(grid, grid, indexing='ij')
     dists = torch.abs(temp1 - temp2)
     cov = kernel(dists)
-    for k in range(n_facs):
-        temp = gen.multivariate_normal(mean.numpy(), cov.numpy())  # convert tensors to ndarrays
-        facs[k] = torch.tensor(temp)
-    return facs.t()
 
+    # Generate GPs    
+    l = torch.linalg.cholesky(cov + gamma * np.eye(len(grid)))
+    z = torch.randn((n_procs, len(grid)), generator=gen, dtype=torch.float64)
+    return z @ l.t()
+    
+    
+
+# ==================== FACTORS ==================== #
 
 FACTOR_KERNELS = {
-    'SqExp1000': partial(squared_exponential_kernel, length=0.1000),  # Smooth
-    'SqExp0500': partial(squared_exponential_kernel, length=0.0500),
-    'SqExp0400': partial(squared_exponential_kernel, length=0.0400),
-    'SqExp0300': partial(squared_exponential_kernel, length=0.0300),
-    'SqExp0200': partial(squared_exponential_kernel, length=0.0200),
-    'SqExp0100': partial(squared_exponential_kernel, length=0.0100),
-    'SqExp0050': partial(squared_exponential_kernel, length=0.0050),
-    'SqExp0010': partial(squared_exponential_kernel, length=0.0010),
-    'SqExp0001': partial(squared_exponential_kernel, length=0.0001),  # Rough
+    'SqExp50': partial(squared_exponential_kernel, length=50),  # Smooth
+    'SqExp40': partial(squared_exponential_kernel, length=40),
+    'SqExp30': partial(squared_exponential_kernel, length=30),
+    'SqExp25': partial(squared_exponential_kernel, length=25),
+    'SqExp15': partial(squared_exponential_kernel, length=15),
+    'SqExp10': partial(squared_exponential_kernel, length=10),
+    'SqExp09': partial(squared_exponential_kernel, length=9),
+    'SqExp08': partial(squared_exponential_kernel, length=8),
+    'SqExp07': partial(squared_exponential_kernel, length=7),
+    'SqExp06': partial(squared_exponential_kernel, length=6),
+    'SqExp05': partial(squared_exponential_kernel, length=5),
+    'SqExp04': partial(squared_exponential_kernel, length=4),
+    'SqExp03': partial(squared_exponential_kernel, length=3),
+    'SqExp02': partial(squared_exponential_kernel, length=2),
+    'SqExp01': partial(squared_exponential_kernel, length=1),  # Rough
 }
 
 
@@ -568,145 +566,368 @@ class BumpLoadingScheme3D4K(LoadingScheme):
 
 
 LOADING_SCHEMES = {
+
     'TrigScheme1D2K': TrigLoadingScheme1D2K,
+
     'BumpScheme1D2K': BumpLoadingScheme1D2K,
     'BumpScheme2D2K': BumpLoadingScheme2D2K,
     'BumpScheme2D4K': BumpLoadingScheme2D4K,
     'BumpScheme3D4K': BumpLoadingScheme3D4K,
+
+    'NetScheme2D2K': NetLoadingScheme2D2K,
+    'NetScheme2D4K': NetLoadingScheme2D4K
+
 }
 
 
 
 # ==================== ERRORS ==================== #
 
-# ---------- Bases ---------- #
+# ---------- Basic Function Sets ---------- #
+# NOTE: BasicFunctionSets are not bases as we do not require them to be 
+# linearly independent. They are used to build more complex 
+# SpaceTimeFunctionSets.
 
-class BSplinePinnedNoExtrapBasis(Basis):
+class BasicFunctionSet(ABC):
 
     def __init__(
             self,
-            domain_range: List[float],
-            n_basis: int,
-            order: int
+            domain_range: DomainRange,
+            n_fcns: int, 
+            ndim: int = 1
         ) -> None:
-        super().__init__(domain_range=domain_range, n_basis=n_basis)
-        self.fcns = bspline_basis_fcns(n_basis + 2, domain_range, order)
-        self.fcns = self.fcns[1:(n_basis + 1)]  # exclude boundary functions
+        self.domain_range = domain_range
+        self.n_fcns = n_fcns
+        self.ndim = ndim
 
-    def _evaluate(
-            self,
-            eval_points: np.ndarray
-        ) -> np.ndarray:
-        eval_points = eval_points[..., 0]
-        mask1 = eval_points >= self._domain_range[0][0]
-        mask2 = eval_points <= self._domain_range[0][1]
-        mask = np.logical_and(mask1, mask2)
-        out = np.zeros((len(self.fcns), len(eval_points)))
-        out[:,mask] = np.vstack([f(eval_points[mask]) for f in self.fcns])
-        return out
+    @abstractmethod
+    def __call__(self, eval_points: torch.Tensor) -> torch.Tensor:
+        pass
     
 
-# ---------- Function Sets ---------- #
-# NOTE: Although SpatialErrorFcnSets and TemporalErrorFcnSets are not 
-# technically bases as we do not require them to be linearly independent, we 
-# want to leverage skfda's Basis framework, so these classes inherit from Basis. 
-
-class SpatialErrorBump1DFcnSet(Basis):
-
-    def __init__(
-            self, 
-            domain_range: List[float],
-            n_basis: int, 
-            width: float
-        ) -> None:
-        super().__init__(domain_range=domain_range, n_basis=n_basis)
-        centers = torch.linspace(0, 1, n_basis, dtype=torch.float64)
-        self.fcns = [BumpFunction1D(c.item(), width / 2, 1) for c in centers]
-
-    def _evaluate(
-            self, 
-            eval_points: np.ndarray
-        ) -> np.ndarray:
-        eval_points = torch.tensor(eval_points[..., 0], dtype=torch.float64)
-        out = torch.zeros((self._n_basis, len(eval_points)), dtype=torch.float64)
-        for j in range(self._n_basis):
-            out[j] = self.fcns[j](eval_points)
-        return out.numpy()
-
-
-class SpatialErrorBSplinePinned1DFcnSet(Basis):
+class BSplineBasicFS(BasicFunctionSet):
 
     def __init__(
             self,
             domain_range: List[float],
-            n_basis: int,
-            width: float,
-            gen: np.random.Generator  
+            n_fcns: int,
+            order: int
         ) -> None:
-        super().__init__(domain_range=domain_range, n_basis=n_basis)
+        super().__init__(domain_range=domain_range, n_fcns=n_fcns)
+        self.fcns = bspline_basis_fcns(n_fcns, domain_range, order)
 
-        # Create n_basis "local bases" from which this set's functions will 
-        # be generated
-        n_basis_base = 5
-        self.local_bases = [None] * n_basis
+    def __call__(
+            self,
+            eval_points: torch.Tensor
+        ) -> torch.Tensor:
+        mask1 = eval_points >= self.domain_range[0]
+        mask2 = eval_points <= self.domain_range[1]
+        mask = torch.logical_and(mask1, mask2)
+        out = torch.zeros((len(self.fcns), len(eval_points)), dtype=torch.float64)
+        out_list = [None] * self.n_fcns
+        for j in range(self.n_fcns):
+            out_ = self.fcns[j](eval_points[mask].numpy())
+            out_ = torch.tensor(out_).to(torch.float64)
+            out_list[j] = out_
+        out[:,mask] = torch.vstack(out_list)
+        return out
+    
+    
+class BSplinePinnedBasicFS(BSplineBasicFS):
 
-        left_endpoints = np.linspace(
-            start=domain_range[0] - width/2, 
-            stop=domain_range[1] - width/2, 
-            num=n_basis
+        def __init__(
+            self,
+            domain_range: List[float],
+            n_fcns: int,
+            order: int
+        ) -> None:
+            super().__init__(domain_range=domain_range, n_fcns=n_fcns + 2, order=order)
+            self.fcns = self.fcns[1:(n_fcns + 1)]  # exclude boundary functions
+            self.n_fcns = n_fcns
+
+
+# TODO: This doesn't play nicely with batching
+class GaussianProcessBasicFS(BasicFunctionSet):
+
+    def __init__(
+            self, 
+            domain_range: List[float],  # NOTE: Can I use domain_range to infer the number of time points? A bit hacky...
+            n_fcns: int,
+            kernel: Callable,
+            gen: torch.Generator,
+            chol_pen: float = 1e-5
+        ) -> None:
+        super().__init__(domain_range=domain_range, n_fcns=n_fcns)
+
+        # NOTE: In order to enable batched evaluations of this function set, 
+        # we simulate GPs on a sufficiently dense grid, then fit BSplines to
+        # the simulated data. 
+
+        # Simulate processes on a sufficiently dense grid
+        grid = torch.linspace(
+            domain_range[0], domain_range[1], 
+            steps=domain_range[1],
+            dtype=torch.float64
         )
-        for j in range(n_basis):
-            self.local_bases[j] = BSplinePinnedNoExtrapBasis(
+        procs = simulate_gauss_procs(
+            grid=grid,
+            n_procs=n_fcns,
+            kernel=kernel,
+            gen=gen,
+            gamma=chol_pen
+        )
+
+        # Get B-spline basis functions
+        self.procs = [None] * n_fcns
+        for j in range(n_fcns):
+            knots, coeffs, deg = splrep(grid.numpy(), procs[j].numpy(), s=0, k=3)
+            self.procs[j] = BSpline(knots, coeffs, deg, extrapolate=False)
+
+    def __call__(self, eval_points: torch.Tensor) -> torch.Tensor:
+        out = torch.zeros(self.n_fcns, len(eval_points), dtype=torch.float64)
+        for j in range(self.n_fcns):
+            out[j] = torch.tensor(self.procs[j](eval_points)).to(torch.float64)
+        return out
+
+
+class Bump1DBasicFS(BasicFunctionSet):
+
+    def __init__(
+            self, 
+            domain_range: List[float],
+            n_fcns: int, 
+            width: float
+        ) -> None:
+        super().__init__(domain_range=domain_range, n_fcns=n_fcns)
+        centers = torch.linspace(0, 1, n_fcns, dtype=torch.float64)
+        self.fcns = [BumpFunction1D(c.item(), width / 2, 1) for c in centers]
+
+    def __call__(
+            self, 
+            eval_points: torch.Tensor
+        ) -> torch.Tensor:
+        out = torch.zeros((self.n_fcns, len(eval_points)), dtype=torch.float64)
+        for j in range(self.n_fcns):
+            out[j] = self.fcns[j](eval_points)
+        return out
+
+
+class BSplinePinned1DBasicFS(BasicFunctionSet):
+
+    def __init__(
+            self,
+            domain_range: List[float],
+            n_fcns: int,
+            width: float,
+            gen: torch.Generator  
+        ) -> None:
+        super().__init__(domain_range=domain_range, n_fcns=n_fcns)
+
+        # Create n_fcns "local bases" from which this set's functions will 
+        # be generated
+        n_fcns_base = 5
+        self.local_bases = [None] * n_fcns
+
+        left_endpoints = torch.linspace(
+            start=domain_range[0] - width/2, 
+            end=domain_range[1] - width/2, 
+            steps=n_fcns
+        )
+        for j in range(n_fcns):
+            self.local_bases[j] = BSplinePinnedBasicFS(
                 [left_endpoints[j], left_endpoints[j] + width], 
-                n_basis_base, 4
+                n_fcns_base, 4
             )
 
         # Generate coefficients that will be used generate single functions 
         # from local bases
-        self.coeffs = gen.normal(size=(n_basis, n_basis_base))
+        self.coeffs = torch.randn(
+            size=(n_fcns, n_fcns_base), 
+            dtype=torch.float64, 
+            generator=gen
+        )
 
-    def _evaluate(
+    def __call__(
             self,
-            eval_points: np.ndarray
-        ) -> np.ndarray:
-        out = np.zeros((self._n_basis, len(eval_points)))
-        for j in range(self._n_basis):
-            temp = self.local_bases[j](eval_points)[:,:,0]
-            out[j] = np.matmul(self.coeffs[j], temp)
+            eval_points: torch.Tensor
+        ) -> torch.Tensor:
+        out = torch.zeros((self.n_fcns, len(eval_points)))
+        for j in range(self.n_fcns):
+            temp = self.local_bases[j](eval_points)
+            out[j] = self.coeffs[j] @ temp
         return out
+    
+
+class TensorBasicFS(BasicFunctionSet):
+
+    def __init__(self, fsets: List[BasicFunctionSet]) -> None:
+
+        # Check that all function sets are 1-dimensional
+        if not all([f.ndim == 1 for f in fsets]):
+            raise Exception("All function sets must be 1-dimensional!")
+        self.fsets = fsets
+        
+        # Call BasicFunctionSet.__init__
+        domain_range = []
+        n_fcns = 1
+        for fset in fsets:
+            domain_range.append(fset.domain_range)
+            n_fcns *= fset.n_fcns
+        super().__init__(domain_range=domain_range, n_fcns=n_fcns, ndim=len(fsets))  
+    
+    def __call__(self, eval_points: torch.Tensor) -> torch.Tensor:
+
+        if eval_points.size(1) != self.ndim: 
+            raise Exception("Number of columns in eval_points must equal n_fsets!")
+
+        # Evaluate each fset at the appropriate column of eval_points
+        evals = [
+            self.fsets[d](eval_points[:,d]) for d in range(self.ndim)
+        ]
+
+        # Get tensor product
+        out = []
+        fset_fidx = [list(range(f.n_fcns)) for f in self.fsets]  # Ex: [[0, 1], [0, 1, 2]]
+        for fidx in itertools.product(*fset_fidx):
+            fset_outs_ = [
+                evals[d][fidx[d]] for d in range(self.ndim)
+            ]
+            fset_outs_ = torch.vstack(fset_outs_)
+            out.append(torch.prod(fset_outs_, dim=0))
+        return torch.vstack(out)
+    
 
 
-class TemporalErrorBSplineFcnSet(Basis):
+# ---------- Space-Time Function Sets ---------- #
+    
+class SpaceTimeFunctionSet(ABC):
 
     def __init__(
-            self,
-            domain_range: List[float],
-            n_basis: int,
-            n_basis_base: int,
-            gen: np.random.Generator  
+            self, 
+            width_space: float,
+            n_time: int,
+            kernel_length_time: float,
+            gen: torch.Generator = None
         ) -> None:
-        super().__init__(domain_range=domain_range, n_basis=n_basis)
+        self.gen = gen
+        self.width_space = width_space
+        self.n_time = n_time
+        self.kernel_length_time = kernel_length_time
 
-        # Create a basis from which functions within this set will be generated
-        self.basis_base = BSplineBasis([0, 1], n_basis=n_basis_base, order=4)
+        self.fset_space = self.get_space_fset()
+        self.fset_time = self.get_time_fset()
+
+        if self.fset_space.n_fcns != self.fset_time.n_fcns:
+            raise Exception("Number of functions in spatial and temporal " 
+                            "function sets must be equal!")
         
-        # Generate coefficients that will be used generate single functions
-        # of this set
-        self.coeffs = gen.normal(size=(n_basis, n_basis_base))
+        self.n_fcns = self.fset_space.n_fcns
+        self.ndim = self.fset_space.ndim + 1
+        
+    def __call__(self, eval_points: torch.Tensor) -> torch.Tensor: 
 
-    def _evaluate(
-            self,
-            eval_points: np.ndarray
-        ) -> None:
-        out = np.zeros((self._n_basis, len(eval_points)))
-        vals = self.basis_base(eval_points)[:,:,0]
-        for j in range(self._n_basis):
-            out[j] = np.matmul(self.coeffs[j], vals)
-        return out
+        if eval_points.size(1) != self.ndim:
+            raise Exception("The number of columns in eval_points does not " 
+                            "match the dimension of this SpaceTimeFunctionSet!")
+
+        points_time = eval_points[:, 0]
+        points_space = eval_points[:, 1:]
+
+        # Remove empty dimension if points_space is m-by-1
+        if points_space.size(1) == 1:
+            points_space = points_space[:,0]
+
+        return self.fset_time(points_time) * self.fset_space(points_space)
+
+ 
+    @abstractmethod
+    def get_space_fset(self) -> BasicFunctionSet:
+        pass
+
+    @abstractmethod
+    def get_time_fset(self) -> BasicFunctionSet:
+        pass
+
+
+class GaussProc_Bump1D_SpaceTimeFS(SpaceTimeFunctionSet):
+
+    def get_space_fset(self) -> BasicFunctionSet:
+        return Bump1DBasicFS(
+            domain_range=[0, 1], 
+            n_fcns=20, 
+            width=self.width_space
+        )
+    
+    def get_time_fset(self) -> BasicFunctionSet:
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=20,
+            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            gen=gen
+        )
+    
+
+class GaussProc_BumpTensor2D_SpaceTimeFS(SpaceTimeFunctionSet):
+
+    def get_space_fset(self) -> BasicFunctionSet:
+        fset = Bump1DBasicFS(
+            domain_range=[0, 1], 
+            n_fcns=20, 
+            width=self.width_space
+        )
+        return TensorBasicFS([fset, fset])
+
+    def get_time_fset(self) -> BasicFunctionSet:
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=400,
+            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            gen=gen
+        )
+    
+
+class GaussProc_BSplinePinned1D_SpaceTimeFS(SpaceTimeFunctionSet):
+
+    def get_space_fset(self) -> BasicFunctionSet:
+        return BSplinePinned1DBasicFS(
+            domain_range=[0, 1],
+            n_fcns=20,
+            width=self.width_space,
+            gen=self.gen
+        )
+
+    def get_time_fset(self) -> BasicFunctionSet:
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=20,
+            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            gen=gen
+        )
+    
+
+class GaussProc_BSplinePinnedTensor2D_SpaceTimeFS(SpaceTimeFunctionSet):
+
+    def get_space_fset(self) -> BasicFunctionSet:
+        fset = BSplinePinned1DBasicFS(
+            domain_range=[0, 1],
+            n_fcns=20,
+            width=self.width_space,
+            gen=self.gen
+        )
+        return TensorBasicFS([fset, fset])
+
+    def get_time_fset(self) -> BasicFunctionSet:
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=400,
+            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            gen=gen
+        )
+
 
 
 # ---------- Error Schemes ---------- #
-# NOTE: Error schemes are defined by a `fcn_set`, and a range 
+# NOTE: Error schemes are defined by a `fset`, and a range 
 # (`scale_min`, `scale_mix`) from which to draw `n_fcns` scaling factors. 
 
 class ErrorScheme(ABC):
@@ -714,14 +935,18 @@ class ErrorScheme(ABC):
     def __init__(
             self, 
             width_space: float,
+            n_time: int,
             gen: torch.Generator
         ) -> None:
 
         # Construct function set
-        gen_np = np.random.default_rng(gen_seeds(gen, 1))
-        self.fcn_set = self.get_fcn_set(width_space, gen_np)
-        self.n_fcns = len(self.fcn_set)
-        self.ndim = len(self.fcn_set.basis_list)
+        self.fset = self.get_fset(
+            width_space=width_space, 
+            n_time=n_time,
+            gen=gen
+        )
+        self.n_fcns = self.fset.n_fcns
+        self.ndim = self.fset.ndim
 
         # Generate coefficients for functions in tensor product set
         self.coeffs = torch.rand(self.n_fcns, generator=gen, dtype=torch.float64)
@@ -744,7 +969,7 @@ class ErrorScheme(ABC):
             # Evaluate batch of points
             sz = min(batch_size, n_points - start_idx)
             points_ = points[start_idx:(start_idx + sz)]
-            vals = torch.tensor(self.fcn_set(points_))[..., 0]  # n_fcns-by-sz
+            vals = self.fset(points_)  # n_fcns-by-sz
 
             # Append nonzero indices/values
             nz_idx = torch.nonzero(vals).t()  # 2-by-`num nonzero values`
@@ -792,7 +1017,12 @@ class ErrorScheme(ABC):
         )
 
     @abstractmethod
-    def get_fcn_set(self, width_space: float, gen_np: np.random.Generator) -> Basis:
+    def get_fset(
+            self, 
+            width_space: float, 
+            n_time: int, 
+            kernel_length_time: float
+        ) -> SpaceTimeFunctionSet:
         pass
 
     @property
@@ -809,111 +1039,71 @@ class ErrorScheme(ABC):
 # NOTE: Naming convention for error schemes is as follows:
 #           <temporal-fset>_<spatial-fset><ndim_space>D_ErrorScheme
     
-class BSpline_Bump1D_ErrorScheme(ErrorScheme):
+class GaussProc_Bump1D_ErrorScheme(ErrorScheme):
 
     scale_min = 0.1
     scale_max = 1
 
-    def get_fcn_set(self, width_space, gen_np):
-        fcn_set_time = TemporalErrorBSplineFcnSet(
-            domain_range=[0, 1], 
-            n_basis=10, 
-            n_basis_base=50,  # NOTE: This controls temporal wiggliness
-            gen=gen_np
+    def get_fset(self, width_space, n_time, gen):
+        return GaussProc_Bump1D_SpaceTimeFS(
+            width_space=width_space,
+            n_time=n_time,
+            kernel_length_time=5,
+            gen=gen
         )
-        fcn_set_space = SpatialErrorBump1DFcnSet(
-            domain_range=[0, 1], 
-            n_basis=20, 
-            width=width_space
-        )
-        return TensorBasis([
-            fcn_set_time, 
-            fcn_set_space
-        ])
     
 
-class BSpline_BSplinePinned1D_ErrorScheme(ErrorScheme):
+class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
 
     scale_min = 0.1
     scale_max = 1
 
-    def get_fcn_set(self, width_space, gen_np):
-        fcn_set_time = TemporalErrorBSplineFcnSet(
-            domain_range=[0, 1], 
-            n_basis=10, 
-            n_basis_base=40,
-            gen=gen_np
+    def get_fset(self, width_space, n_time, gen):
+        return GaussProc_BumpTensor2D_SpaceTimeFS(
+            width_space=width_space,
+            n_time=n_time,
+            kernel_length_time=5,
+            gen=gen
         )
-        fcn_set_space = SpatialErrorBSplinePinned1DFcnSet(
-            domain_range=[0, 1], 
-            n_basis=20, 
-            width=width_space, 
-            gen=gen_np
-        )
-        return TensorBasis([
-            fcn_set_time, 
-            fcn_set_space
-        ])
     
 
-class BSpline_Bump2D_ErrorScheme(ErrorScheme):
+class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
 
     scale_min = 0.1
     scale_max = 1
 
-    def get_fcn_set(self, width_space, gen_np):
-        fcn_set_time = TemporalErrorBSplineFcnSet(
-            domain_range=[0, 1], 
-            n_basis=10, 
-            n_basis_base=40,
-            gen=gen_np
+    def get_fset(self, width_space, n_time, gen):
+        return GaussProc_BSplinePinned1D_SpaceTimeFS(
+            width_space=width_space,
+            n_time=n_time,
+            kernel_length_time=5,
+            gen=gen
         )
-        fcn_set_space = SpatialErrorBump1DFcnSet(
-            domain_range=[0, 1], 
-            n_basis=20, 
-            width=width_space
-        )
-        return TensorBasis([
-            fcn_set_time, 
-            fcn_set_space,
-            fcn_set_space
-        ])
     
 
-class BSpline_BSplinePinned2D_ErrorScheme(ErrorScheme):
+class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
 
     scale_min = 0.1
     scale_max = 1
 
-    def get_fcn_set(self, width_space, gen_np):
-        fcn_set_time = TemporalErrorBSplineFcnSet(
-            domain_range=[0, 1], 
-            n_basis=10, 
-            n_basis_base=40,
-            gen=gen_np
+    def get_fset(self, width_space, n_time, gen):
+        return GaussProc_BSplinePinnedTensor2D_SpaceTimeFS(
+            width_space=width_space,
+            n_time=n_time,
+            kernel_length_time=5,
+            gen=gen
         )
-        fcn_set_space = SpatialErrorBSplinePinned1DFcnSet(
-            domain_range=[0, 1], 
-            n_basis=20, 
-            width=width_space, 
-            gen=gen_np
-        )
-        return TensorBasis([
-            fcn_set_time, 
-            fcn_set_space, 
-            fcn_set_space
-        ])
     
 
 ERROR_SCHEMES = {
 
     # 1-dimensional
-    'BSpline_Bump1D': BSpline_Bump1D_ErrorScheme,
-    'BSpline_BSplinePinned1D': BSpline_BSplinePinned1D_ErrorScheme,
+    'GaussProc_Bump1D': GaussProc_Bump1D_ErrorScheme,
+    'GaussProc_BSplinePinned1D': GaussProc_BSplinePinned1D_ErrorScheme,
 
-    # 2-dimensinoal
-    'BSpline_Bump2D': BSpline_Bump2D_ErrorScheme,
-    'BSpline_BSplinePinned2D': BSpline_BSplinePinned2D_ErrorScheme
+    # 1-dimensional
+    'GaussProc_BumpTensor2D': GaussProc_BumpTensor2D_ErrorScheme,
+    'GaussProc_BSplinePinnedTensor2D': GaussProc_BSplinePinnedTensor2D_ErrorScheme,
 
 }
  
@@ -944,26 +1134,14 @@ def build_loadings(
     return loads
 
 
-def gen_factors(
-        kernel: Callable, 
-        n_facs: int, 
-        points: torch.Tensor, 
-        n_samps: int, 
-        gen: torch.Generator
-    ):
-    """Yields n_samps factor tensors."""
-    for _ in range(n_samps):
-        yield build_factors(points, n_facs, kernel, gen)
-
-
 def build_errors(
         indices: torch.Tensor,
         sz: List[int],
         vals: torch.sparse.Tensor
     ) -> torch.sparse.Tensor:
-    """Returns a (sparse) error tensor of dimension ncomps-by-sz_time-bysz_space."""
+    """Returns a (sparse) error tensor of dimension n_err_fcns-by-n_time-bysz_space."""
     
-    # NOTE: `vals` is a sparse tensor of dimension ncomps-by-n, where n is the 
+    # NOTE: `vals` is a sparse tensor of dimension n_err_fcns-by-n, where n is the 
     # number of points in the spatiotemproal grid. To obtain the desired sparse tensor, we 
     # need only "unfold" the dimension of size n into several whose sizes are
     # specified in `sz_space`. We can do this my mapping the ith point in the
@@ -982,33 +1160,60 @@ def build_errors(
 
 def simulate_ffm_data(
         loads: torch.Tensor,
-        fac_gen: Generator,
+        facs: torch.Tensor,
         err: torch.sparse.Tensor, 
         prop_global: float,
+        batch_size: int,
         gen: torch.Generator = torch.Generator(),
     ):
 
+    def _gen_global_local_batches():
+        curr_time = 0
+        while curr_time < sz_time: 
+            n_batch = min(batch_size, sz_time - curr_time) 
+            facs_batch = facs[curr_time:(curr_time + n_batch)]
+            comp_global = basis_expansion(loads, facs_batch, ndim_space)
+            comp_local = torch.sum(
+                slice_sparse_coo_tensor(
+                    err, dim=1, 
+                    start=curr_time, 
+                    stop=curr_time + n_batch
+                ),
+                dim=0
+            )
+            yield comp_global, comp_local
+            curr_time += n_batch
+
     # Extract constants
     sz_space = loads.shape[1:]
+    sz_time = facs.shape[0]
     ndim_space = len(sz_space)
-    n_err_fcns = err.size(0)
+    n_err_fcns = err.shape[0]
 
-    # Generate samples
-    for facs in fac_gen: 
+    # Scale error functions
+    err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
+    err *= err_coeffs.view(n_err_fcns, 1, *[1]*ndim_space)
 
-        # Compute global component 
-        comp_global = basis_expansion(loads, facs, ndim_space)
+    # Compute global and local l2 norms
+    global_frob = 0
+    local_frob = 0
+    global_numel = 0
+    local_numel = 0
+    for comp_global, comp_local in _gen_global_local_batches():
+        global_frob += torch.sum(comp_global ** 2).item()
+        global_numel += torch.numel(comp_global)
+        local_frob += torch.sum(comp_local ** 2).item()
+        local_numel += torch.numel(comp_local)
+    norm_global = math.sqrt(global_frob / global_numel)
+    norm_local = math.sqrt(local_frob / local_numel)
 
-        # Generate error function coefficients, then compute local component
-        err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
-        err_ = err.clone()
-        err_ *= err_coeffs.view(n_err_fcns, 1, *[1]*ndim_space)
-        comp_local = torch.sum(err_, dim=0)
-
-        yield (
-            safe_l2_normalization(comp_global) * prop_global + 
-            safe_l2_normalization(comp_local) * (1 - prop_global)
-        )
+    # Yield data in desired global-to-local ratio
+    for comp_global, comp_local in _gen_global_local_batches():
+        comp_global /= norm_global
+        comp_global *= prop_global
+        comp_local /= norm_local
+        comp_local *= (1 - prop_global)
+        yield comp_global + comp_local
 
 
 
@@ -1024,17 +1229,13 @@ if __name__ == '__main__':
         help="Dataset directory in which simulated data will be stored."
     )
     parser.add_argument(
-        '--sz_time', type=int,
+        '--n_time', type=int,
         help=("Number of time points for which to simulate data. Since the "
               "temporal domain is 1-dimensional, this an integer argument.")
     )
     parser.add_argument(
         '--sz_space', nargs='+', type=int,
         help="Shape of the spatial grid on which to simulate data."
-    )
-    parser.add_argument(
-        '--n_samps', type=int,
-        help="Number of samples to simulate."
     )
     parser.add_argument(
         '--factor_kernel', type=str,
@@ -1057,6 +1258,10 @@ if __name__ == '__main__':
         help="Proportion of observations coming from global component."
     )
     parser.add_argument(
+        '--batch_size', type=int, 
+        help="Maximumum number of time points to include in each file."
+    )
+    parser.add_argument(
         '--seed', default=12345, type=int,
         help="Integer used to seed generator."
     )
@@ -1066,8 +1271,8 @@ if __name__ == '__main__':
     config = load_config(args.config)
     gen = torch.Generator().manual_seed(args.seed)
     load_scheme = LOADING_SCHEMES[args.load_scheme]()
-    err_scheme = ERROR_SCHEMES[args.err_scheme](args.delta, gen)
-    sz = [args.sz_time] + args.sz_space
+    err_scheme = ERROR_SCHEMES[args.err_scheme](args.delta, args.n_time, gen)
+    sz = [args.n_time] + args.sz_space
 
     # Check for `load_scheme`, `err_scheme`, and `sz_space` compatibility
     if load_scheme.ndim != len(args.sz_space):
@@ -1098,9 +1303,9 @@ if __name__ == '__main__':
     indices_space = torch.cartesian_prod(*indices_space_list)  # M-by-ndim_space
     points_space = torch.cartesian_prod(*points_space_list)    # M-by-ndim_space
 
-    # Generate `points_time` and `indices_time` from `sz_time`
-    indices_time = torch.arange(args.sz_time, dtype=torch.int32)
-    points_time = indices_time.to(torch.float64) / args.sz_time
+    # Generate `points_time` and `indices_time` from `n_time`
+    indices_time = torch.arange(args.n_time, dtype=torch.int32)
+    points_time = (indices_time + 1).to(torch.float64)
 
     # Get `points` and `indices` by taking cartesian product
     indices = torch.cartesian_prod(indices_time, *indices_space_list)
@@ -1115,13 +1320,13 @@ if __name__ == '__main__':
     print("Preparing factors...")
     n_facs = len(load_scheme.loading_fcns)
     kernel = FACTOR_KERNELS[args.factor_kernel]
-    fac_gen = gen_factors(kernel, n_facs, points_time, args.n_samps, gen)
+    facs = simulate_gauss_procs(points_time, n_facs, kernel, gen).t()  # n_time-by-n_facs
 
     # Build error tensor
     # TODO: Is there a way to accelerate error generation? Currently much slower
     # than loading/factor generation. Cache error schemes?
     print("Preparing errors....")
-    vals = err_scheme(points)  # n_fcns-by-sz_time-by-sz_shape (sparse)
+    vals = err_scheme(points)  # n_fcns-by-n_time-by-sz_shape (sparse)
     errs = build_errors(indices, sz, vals)
 
 
@@ -1130,9 +1335,10 @@ if __name__ == '__main__':
     print("Simulating new data...")
     dataloader = simulate_ffm_data(
         loads, 
-        fac_gen,
+        facs,
         errs,
         args.prop_global,
+        args.batch_size,
         gen=gen
     )
     write_generated_tensor(dataloader, args.dir, 'data-full')

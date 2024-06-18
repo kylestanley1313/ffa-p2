@@ -1,0 +1,393 @@
+import argparse
+import os
+import time
+import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
+from functools import partial
+from torch.nn.functional import mse_loss
+from typing import Callable, List, Tuple
+
+from benchmarking import size_dist_obj, time_dist_fcn
+from config import load_config
+from utils.data import (
+    DistributedStratifiedCovarianceDataset,
+    DistributedStratifiedDatasetBatchSampler,
+    DistributedStratifiedDatasetSampler,
+    StratifiedDataLoader,
+    StratifiedTorchDataLoader
+)
+from utils.initialization import PCALoadingInitializer
+from utils.utils import (
+    gen_seeds, 
+    multiply_list,
+    read_tensors,
+    remove_file,
+    write_rows_to_csv
+)
+from utils.model import LowRankCovariance
+    
+
+def sync_model(
+        rank: int, 
+        world_size: int, 
+        model: LowRankCovariance, 
+        points: torch.Tensor
+    ):
+
+    idx0 = torch.unique(points[:,0])
+    idx1 = torch.unique(points[:,1])
+    idx = torch.unique(torch.cat((idx0, idx1)))
+    sz = torch.tensor([len(idx)], dtype=torch.int32)
+    loads = model.get_loads(idx)
+    other_ranks = [r for r in range(world_size) if r != rank]
+    
+    # Send/receive `sz` to/from all other ranks
+    sz_in = {r: torch.zeros(1, dtype=torch.int32) for r in other_ranks}
+    reqs_sz_out = {}
+    reqs_sz_in = {}
+    for r in other_ranks:
+        reqs_sz_out[r] = dist.isend(sz, r)
+        reqs_sz_in[r] = dist.irecv(sz_in[r], r)
+    for r in other_ranks:
+        reqs_sz_out[r].wait()
+        reqs_sz_in[r].wait() 
+
+    # Send/receive `idx` and `loads` to/from all other ranks
+    idx_in = {
+        r: torch.zeros(sz_in[r].item(), dtype=torch.int32) 
+        for r in other_ranks
+    }
+    reqs_idx_out = {}
+    reqs_idx_in = {}
+    loads_in = {
+        r: torch.zeros(sz_in[r].item(), model.n_facs, dtype=torch.float64) 
+        for r in other_ranks
+    }
+    reqs_loads_out = {}
+    reqs_loads_in = {}
+    for r in other_ranks:
+        reqs_idx_out[r] = dist.isend(idx, r)
+        reqs_idx_in[r] = dist.irecv(idx_in[r], r)
+        reqs_loads_out[r] = dist.isend(loads, r)
+        reqs_loads_in[r] = dist.irecv(loads_in[r], r)
+    for r in other_ranks:
+        reqs_idx_out[r].wait()
+        reqs_idx_in[r].wait()
+        reqs_loads_out[r].wait()
+        reqs_loads_in[r].wait()
+
+    # Update model
+    for r in other_ranks:
+        model.set_loads(loads_in[r], idx_in[r])
+
+
+def broadcast_model(model: LowRankCovariance, rank: int, src: int):
+    if rank == src:
+        loads = model.get_loads()
+    else:
+        loads = torch.zeros_like(model.get_loads())
+    dist.broadcast(loads, src)
+    model.set_loads(loads)
+
+
+def process_epoch(
+        model, 
+        dataloader, 
+        objective, 
+        optimizer, 
+        gen,
+        n_strata, 
+        rank, 
+        world_size
+    ):
+
+    # Broadcast stratum sequence from rank 0
+    if rank == 0:
+        strat_seq = torch.randperm(n_strata, generator=gen, dtype=torch.int32)
+    else:
+        strat_seq = torch.zeros(n_strata, dtype=torch.int32)
+    dist.broadcast(strat_seq, 0)
+
+    for s in strat_seq:  # > subepoch
+        dataloader.set_stratum(s.item())
+
+        for points, cov in dataloader:
+
+            # Forward pass
+            preds = model(points)
+            loss = objective(preds, cov)
+
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # Sync model
+        dist.barrier()
+        sync_model(rank, world_size, model, points)
+
+
+def compute_loss(model, dataloader, objective, rank, world_size):
+
+    def compute_loss_(dataloader):
+
+        # Compute rank-wise loss
+        loss = 0
+        n = len(dataloader)
+        for points, cov in dataloader:
+            preds = model(points)
+            loss += objective(preds, cov)
+        
+        # Send loss data when rank > 0
+        if rank != 0:
+            dist.send(torch.tensor([n], dtype=torch.int32), 0)
+            dist.send(torch.tensor([loss], dtype=torch.float64), 0)
+        
+        # Receive loss data when rank == 0
+        if rank == 0:
+            
+            # Collect losses
+            n_list = [torch.zeros(1, dtype=torch.int32) for _ in range(world_size)]
+            loss_list = [torch.zeros(1, dtype=torch.float64) for _ in range(world_size)]
+            n_list[0] = torch.tensor([n], dtype=torch.int32)
+            loss_list[0] = torch.tensor([loss], dtype=torch.float64)
+            for r in range(1, world_size):
+                dist.recv(n_list[r], r)
+                dist.recv(loss_list[r], r)
+
+            # Aggregate losses
+            n = sum(n_list).item()
+            loss = sum(loss_list).item()
+            return loss / n
+
+    # Compute rank-wise loss
+    dataloader.set_training()
+    train_loss = compute_loss_(dataloader)
+    dataloader.set_validation()  
+    val_loss = compute_loss_(dataloader)
+
+    return train_loss, val_loss
+
+    
+def init_process(
+        rank: int, 
+        world_size: int, 
+        fcn: Callable, 
+        path_shared: str,
+        backend: str,
+        **kwargs
+    ):
+    dist.init_process_group(
+        backend, init_method=f'file://{path_shared}',
+        rank=rank, world_size=world_size
+    )
+    fcn(rank, world_size, **kwargs)
+
+
+# TODO: Update objective functions as in DDP
+def train(
+        rank: int, 
+        world_size: int, 
+        dir_out: str,
+        dir_out_scratch: str,
+        sz_space: List[int], 
+        n_facs: int, 
+        batch_size: int,
+        lr: float, 
+        patience: int,
+        max_epochs: int, 
+        benchmark: bool,
+        seed: int
+    ) -> None:
+
+    torch.set_num_threads(1)
+    gen = torch.Generator().manual_seed(seed)
+    n_strata = 2 * world_size + 1
+
+    # Set directories
+    dir_cov = os.path.join(dir_out_scratch, 'cov-dssgd')
+    dir_bench = os.path.join(dir_out, 'bench')
+
+    # Get benchmarking wrappers
+    process_epoch_ = time_dist_fcn(
+        fcn=process_epoch,
+        dir=dir_bench,
+        prefix='process_epoch',
+        benchmark=benchmark
+    )
+    Dataset_ = size_dist_obj(
+        init=DistributedStratifiedCovarianceDataset,
+        dir=dir_bench,
+        prefix='dataset',
+        benchmark=benchmark
+    )
+
+    dataset = Dataset_(dir_cov, rank, world_size)
+    batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
+    dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
+    # sampler = DistributedStratifiedDatasetSampler(dataset, gen)
+    # dataloader = StratifiedDataLoader(dataset, sampler=sampler, batch_size=batch_size)
+
+    n_vars = multiply_list(sz_space)
+    path_init = os.path.join(dir_out, 'init-loads-dssgd.pt')
+    model = LowRankCovariance(n_vars, n_facs, path_init)
+    broadcast_model(model, rank, 0)
+
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    objective_mean = partial(mse_loss, reduction='mean')
+    objective_sum = partial(mse_loss, reduction='sum')
+
+    path_model = os.path.join(dir_out, 'model-dssgd.pth')
+    best_val_loss = float('inf')
+    epochs_waited = 0
+    early_stop = torch.tensor(False)
+    # prev_train_loss = float('inf')
+    lr = torch.tensor(lr)
+    for epoch in range(max_epochs):
+
+        process_epoch_(
+            model, dataloader, objective_mean, optimizer, 
+            gen, n_strata, rank, world_size
+        )
+        train_loss, val_loss = compute_loss(model, dataloader, objective_sum, rank, world_size)
+        
+        # Rank-0 worker determines whether to stop and how to update lr
+        if rank == 0:
+            print(f"epoch = {epoch + 1} | train_loss = {train_loss} | val_loss = {val_loss}")
+
+            # Early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                torch.save(model.state_dict(), path_model)
+                epochs_waited = 0
+            else:
+                epochs_waited += 1
+                if epochs_waited >= patience: 
+                    print(f"Early stopping after {epoch + 1} epochs.")
+                    early_stop = torch.tensor(True)
+
+            # Update learning rate via bold driver
+            # lr *= 1.05 if train_loss < prev_train_loss else 0.5
+        
+        # Communicate early_stop and lr to non-zero ranks
+        dist.barrier()
+        dist.broadcast(early_stop, 0)
+        if early_stop:
+            break
+        # dist.broadcast(lr, 0)
+        # optimizer.param_groups[0]['lr'] = lr.item()
+
+    # ########## TESTING ##########
+    # if rank == 0: 
+    #     torch.save(model.state_dict(), path_model)
+    # #############################
+
+    dist.destroy_process_group()
+
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str)
+    parser.add_argument('--dir_out', type=str)
+    parser.add_argument('--dir_out_scratch', type=str)
+    parser.add_argument('--world_size', type=int)
+    parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
+    parser.add_argument('--sz_space', type=int, nargs='+')
+    parser.add_argument('--n_facs', type=int)
+    parser.add_argument('--delta', type=float)
+    parser.add_argument(
+        '--init_method', type=str, 
+        choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
+    )
+    parser.add_argument('--prop_init', type=float, default=1)
+    parser.add_argument('--batch_size', type=int)
+    parser.add_argument('--lr', type=float)
+    parser.add_argument('--max_epochs', type=int, default=100)
+    parser.add_argument('--benchmark', action='store_true')
+    parser.add_argument('--seed', type=int, default=12345)
+    args = parser.parse_args()
+
+    config = load_config(args.config)
+
+    # Configure globals
+    gen = torch.Generator().manual_seed(args.seed)
+    seeds = gen_seeds(gen, args.world_size)
+
+    # Set directories and paths
+    dir_data = os.path.join(args.dir_out_scratch, 'data')
+    dir_cov = os.path.join(args.dir_out_scratch, 'cov-dssgd')
+    dir_bench = os.path.join(args.dir_out, 'bench')
+    path_init = os.path.join(args.dir_out, 'init-loads-dssgd.pt')
+    path_model = os.path.join(args.dir_out, f'model-dssgd-{args.split}.pth')
+    other_bench_path = os.path.join(dir_bench, 'other-dssgd.csv')
+    suffix = args.dir_out.split('out/')[-1].replace('/', '_')
+    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
+
+    # Delete files from various directories
+    remove_file(path_init)
+    remove_file(path_model)
+
+    # Multiprocessing configurations
+    mp.set_start_method('spawn')
+
+
+    # ---------- INITIALIZATION ---------- #
+    print("Initializing loadings...")
+
+    start = time.time()
+    pca_svd_solvers = {
+        'pca_full': 'full',
+        'pca_arpack': 'arpack',
+        'pca_randomized': 'randomized'
+    }
+    if args.init_method == 'random':
+        n_vars = multiply_list(args.sz_space)
+        loads = torch.randn(args.n_facs, n_vars, generator=gen, dtype=torch.float64)
+    else:
+        dataloader = read_tensors(dir_data, 'data-train')
+        initializer = PCALoadingInitializer(
+            pca_svd_solvers[args.init_method], 
+            args.n_facs, 
+            args.prop_init, 
+            gen
+        )
+        loads = initializer(dataloader)
+    torch.save(loads.t(), path_init)
+    end = time.time()
+    if args.benchmark:
+        write_rows_to_csv(other_bench_path, [['initialization', end - start]])
+
+
+    # ---------- DISTRIBUTED RUN ---------- #
+    print("Fitting model...")
+
+    suffix = args.dir_out.split('/')[-1]
+    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
+    remove_file(path_shared)
+    processes = []
+    for rank in range(args.world_size):
+        p = mp.Process(
+            target=init_process, 
+            args=(rank, args.world_size, train, path_shared, config.backend),
+            kwargs={
+                'dir_out': args.dir_out,
+                'dir_out_scratch': args.dir_out_scratch,
+                'sz_space': args.sz_space,
+                'n_facs': args.n_facs,
+                'batch_size': args.batch_size,
+                'lr': args.lr,
+                'patience': 20,
+                'max_epochs': args.max_epochs,
+                'benchmark': args.benchmark,
+                'seed': seeds[rank]
+            }
+        )
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
+

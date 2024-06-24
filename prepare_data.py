@@ -11,6 +11,7 @@ from config import load_config
 from utils.utils import (
     flatten_dataset, 
     gen_points,
+    init_process,
     multiply_list, 
     read_tensors,
     refresh_directory,
@@ -19,10 +20,10 @@ from utils.utils import (
 )
 
 
-def fair_allocate(num_items: int, num_groups: int) -> List[int]:
-    """Evenly distributes num_items across num_groups."""
-    out = [num_items // num_groups] * num_groups
-    remainder = num_items % num_groups
+def fair_allocate(n_items: int, n_groups: int) -> List[int]:
+    """Evenly distributes n_items across n_groups."""
+    out = [n_items // n_groups] * n_groups
+    remainder = n_items % n_groups
     out[0:remainder] = [x + 1 for x in out[0:remainder]]
     return out
 
@@ -31,9 +32,9 @@ def gen_strata(nprocs: int) -> List[Tuple[Tuple]]:
     path = os.path.join('strata', f'nprocs-{nprocs}.pt')
     if os.path.exists(path):
         tensor = torch.load(path)
-        num_strata = 2 * nprocs + 1
-        strata = [None] * num_strata
-        for s in range(num_strata):
+        n_strata = 2 * nprocs + 1
+        strata = [None] * n_strata
+        for s in range(n_strata):
             mask = tensor[:,0] == s
             stratum = tuple(tuple(s_) for s_ in tensor[mask, 1:].tolist())
             strata[s] = stratum
@@ -42,10 +43,10 @@ def gen_strata(nprocs: int) -> List[Tuple[Tuple]]:
         raise Exception(f"Strata do not exist for {nprocs} processes.")
     
 
-def allocate_points_strat(
+def allocate_points_dssgd(
         rank: int,
         world_size: int,
-        grid_shape: List[int], 
+        sz_space: List[int], 
         delta: float, 
         dir_cov: str,
         seed: int,
@@ -61,17 +62,17 @@ def allocate_points_strat(
         block_map[strata[i][rank]] = i
 
     # Segment variables
-    num_vars = multiply_list(grid_shape)
-    seg_cnts = fair_allocate(num_vars, 2*world_size)
+    n_vars = multiply_list(sz_space)
+    seg_cnts = fair_allocate(n_vars, 2*world_size)
     idx = 0
-    segs = torch.zeros(num_vars, dtype=torch.int32)
+    segs = torch.zeros(n_vars, dtype=torch.int32)
     for seg, cnt in enumerate(seg_cnts):
         segs[idx:(idx+cnt)] = torch.ones(cnt) * seg
         idx += cnt
-    segs = segs[torch.randperm(num_vars, generator=gen)]
+    segs = segs[torch.randperm(n_vars, generator=gen)]
 
     # Create points and strat files for this rank
-    points_loader = gen_points(grid_shape, delta, 2*num_vars)
+    points_loader = gen_points(sz_space, delta, 2*n_vars)
     n_batch = 0
     for points in points_loader:
 
@@ -102,10 +103,10 @@ def allocate_points_strat(
         n_batch += 1
 
 
-def allocate_points_ddp(
+def allocate_points_dsgd(
         rank: int,
         world_size: int,
-        grid_shape: List[int], 
+        sz_space: List[int], 
         delta: float, 
         dir_cov: str,
         seed: int,
@@ -113,8 +114,8 @@ def allocate_points_ddp(
     """Generates and writes files of the form points-{rank}-{n_batch}.pt."""
 
     gen = torch.Generator().manual_seed(seed)
-    num_vars = multiply_list(grid_shape)
-    points_loader = gen_points(grid_shape, delta, 2*num_vars)
+    n_vars = multiply_list(sz_space)
+    points_loader = gen_points(sz_space, delta, 2*n_vars)
     
     n_batch = 0
     for points in points_loader: 
@@ -129,6 +130,26 @@ def allocate_points_ddp(
         torch.save(points[idx], path)
 
         n_batch += 1
+
+
+def allocate_points_lbfgs(
+        sz_space: List[int], 
+        delta: float, 
+        dir_cov: str
+    ) -> None:
+    """Generates and writes file points.pt.
+    
+    This function will only be called for relativley small datasets, 
+    so memory-efficient batching of output files need not be used. 
+    """
+    n_vars = multiply_list(sz_space)
+    points_loader = gen_points(sz_space, delta, 2*n_vars)
+    points_list = []
+    for points in points_loader:
+        points_list.append(points)
+    points = torch.cat(points_list)
+    path = os.path.join(dir_cov, 'points.pt')
+    torch.save(points, path)
 
 
 def compute_covariance(
@@ -147,16 +168,16 @@ def compute_covariance(
     def _compute_covariance(split: str) -> None: 
 
         # Compute covariance
-        num_points = len(points)
-        t1 = torch.zeros(num_points, dtype=torch.float64)
-        t2 = torch.zeros(num_points, dtype=torch.float64)
-        t3 = torch.zeros(num_points, dtype=torch.float64)
+        n_points = len(points)
+        t1 = torch.zeros(n_points, dtype=torch.float64)
+        t2 = torch.zeros(n_points, dtype=torch.float64)
+        t3 = torch.zeros(n_points, dtype=torch.float64)
         n = 0
         data_loader = read_tensors(dir_data, f'data-{split}')
         for data in data_loader: 
 
             n += len(data)
-            for i in range(num_points): 
+            for i in range(n_points): 
                 row, col = points[i]
                 t1[i] += torch.sum(data[:,row] * data[:,col])
                 t2[i] += torch.sum(data[:,row])
@@ -174,29 +195,14 @@ def compute_covariance(
     _compute_covariance('valid')
 
 
-def init_process(
-        rank: int, 
-        world_size: int, 
-        fcn: Callable, 
-        path_shared: str,
-        backend: str,
-        **kwargs
-    ):
-    dist.init_process_group(
-        backend, init_method=f'file://{path_shared}',
-        rank=rank, world_size=world_size
-    )
-    fcn(rank, world_size, **kwargs)
-
-
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_dataset', type=str)
-    parser.add_argument('--est_method', type=str, choices=['strat', 'ddp'])
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
+    parser.add_argument('--est_method', type=str, choices=['lbfgs', 'dsgd', 'dssgd'])
     parser.add_argument(
         '--world_size_est', type=int, 
         help="Number of workers used in downstream estimation."
@@ -206,29 +212,31 @@ if __name__ == '__main__':
         help="Number of workers used in this script's covariance computation."
     )
     parser.add_argument('--delta', type=float)
-    parser.add_argument('--train_prop', type=float, default=0.8)
+    parser.add_argument('--prop_train', type=float, default=0.8)
+    parser.add_argument('--benchmark', action='store_true')
+    parser.add_argument('--refresh_dirs', action='store_true')
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
 
     config = load_config(args.config)
 
     # Set directories and paths
-    # dir_out = os.path.join('out', args.dir_out)
     dir_data = os.path.join(args.dir_out_scratch, 'data')
-    dir_cov = os.path.join(args.dir_out_scratch, 'cov')
+    dir_cov = os.path.join(args.dir_out_scratch, f'cov-{args.est_method}')
     dir_bench = os.path.join(args.dir_out, 'bench')
-    other_bench_path = os.path.join(dir_bench, 'other.csv')
-    suffix = args.dir_out.split('/')[-1]
+    other_bench_path = os.path.join(dir_bench, f'other-{args.est_method}.csv')
+    suffix = args.dir_out.split('out/')[-1].replace('/', '_')
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
 
     # Delete files from various directories
-    refresh_directory(dir_data)
-    refresh_directory(dir_cov)
-    if config.benchmark:
-        refresh_directory(dir_bench)
+    if args.refresh_dirs:
+        refresh_directory(dir_data)
+        refresh_directory(dir_cov)
+        if args.benchmark:
+            refresh_directory(dir_bench)
 
-    # Flatten dataset, getting `grid_shape` and `num_vars` along the way
-    grid_shape = flatten_dataset(args.dir_dataset, dir_data)
+    # Flatten dataset, getting `sz_space` and `n_vars` along the way
+    sz_space = flatten_dataset(args.dir_dataset, dir_data)
 
     # Multiprocessing configurations
     mp.set_start_method('spawn')
@@ -236,30 +244,37 @@ if __name__ == '__main__':
     # ---------- POINT ALLOCATION ---------- #
     print("Allocating points...")
     allocate_points_fcns = {
-        'strat': allocate_points_strat,
-        'ddp': allocate_points_ddp
+        'lbfgs': allocate_points_lbfgs,
+        'dsgd': allocate_points_dsgd,
+        'dssgd': allocate_points_dssgd,
     }
-    remove_file(path_shared)
-    processes = []
-    for rank in range(args.world_size_est):
-        p = mp.Process(
-            target=init_process,
-            args=(
-                rank, args.world_size_est, allocate_points_fcns[args.est_method], 
-                path_shared, config.backend
-            ),
-            kwargs={
-                'grid_shape': grid_shape,
-                'delta': args.delta,
-                'dir_cov': dir_cov,
-                'seed': args.seed,  # use same seed for all ranks
-            }
-        )
-        p.start()
-        processes.append(p)
-    
-    for p in processes:
-        p.join()
+
+    if args.est_method in ['dsgd', 'dssgd']:  # Distributed estimation methods
+        remove_file(path_shared)
+        processes = []
+        for rank in range(args.world_size_est):
+            p = mp.Process(
+                target=init_process,
+                args=(
+                    rank, args.world_size_est, allocate_points_fcns[args.est_method], 
+                    path_shared, config.backend
+                ),
+                kwargs={
+                    'sz_space': sz_space,
+                    'delta': args.delta,
+                    'dir_cov': dir_cov,
+                    'seed': args.seed,  # use same seed for all ranks
+                }
+            )
+            p.start()
+            processes.append(p)
+        
+        for p in processes:
+            p.join()
+
+    else:  # Serial estimation methods
+        allocate_points_fcns[args.est_method](sz_space, args.delta, dir_cov)
+
 
 
     # ---------- DATA SPLITTING ---------- #
@@ -270,10 +285,10 @@ if __name__ == '__main__':
     i = 0
     for data in data_loader: 
         sz = len(data)
-        num_train = int(args.train_prop * sz)
+        n_train = int(args.prop_train * sz)
         idx = torch.randperm(sz, generator=gen)
-        data_train = data[idx[:num_train]]
-        data_valid = data[idx[num_train:]]
+        data_train = data[idx[:n_train]]
+        data_valid = data[idx[n_train:]]
         path_train = os.path.join(dir_data, f'data-train-{i}.pt')
         path_valid = os.path.join(dir_data, f'data-valid-{i}.pt')
         torch.save(data_train, path_train)
@@ -294,28 +309,29 @@ if __name__ == '__main__':
     pool.close()
     pool.join()
     end = time.time()
-    if config.benchmark:
+    if args.benchmark:
         write_rows_to_csv(other_bench_path, [['covariance', end - start]]) 
 
 
     # ---------- MERGE FILES ---------- #
     print("Merging files...")
 
-    files = sorted(os.listdir(dir_cov))
-    file_types = ['points', 'cov-full', 'cov-train', 'cov-valid']
-    if args.est_method == 'strat':
-        file_types.append('strat')
-    for rank in range(args.world_size_est):
-        for file_type in file_types:
-            tensor_list = []
-            for f in files:
-                if f.startswith(f'{file_type}-{rank}'):
-                    path = os.path.join(dir_cov, f)
-                    tensor_list.append(torch.load(path))
-                    remove_file(path)
-            tensor = torch.cat(tensor_list)
-            path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
-            torch.save(tensor, path)
+    if args.est_method in ['dsgd', 'dssgd']:
+        files = sorted(os.listdir(dir_cov))
+        file_types = ['points', 'cov-full', 'cov-train', 'cov-valid']
+        if args.est_method == 'dssgd':
+            file_types.append('strat')
+        for rank in range(args.world_size_est):
+            for file_type in file_types:
+                tensor_list = []
+                for f in files:
+                    if f.startswith(f'{file_type}-{rank}'):
+                        path = os.path.join(dir_cov, f)
+                        tensor_list.append(torch.load(path))
+                        remove_file(path)
+                tensor = torch.cat(tensor_list)
+                path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
+                torch.save(tensor, path)
 
     print("DONE!")
             

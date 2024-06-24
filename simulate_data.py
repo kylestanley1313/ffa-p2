@@ -2,6 +2,7 @@ import argparse
 import itertools
 import math
 import numpy as np
+import os
 import torch
 from abc import ABC, abstractmethod
 from functools import partial
@@ -230,28 +231,6 @@ def simulate_gauss_procs(
     l = torch.linalg.cholesky(cov + gamma * np.eye(len(grid)))
     z = torch.randn((n_procs, len(grid)), generator=gen, dtype=torch.float64)
     return z @ l.t()
-    
-    
-
-# ==================== FACTORS ==================== #
-
-FACTOR_KERNELS = {
-    'SqExp50': partial(squared_exponential_kernel, length=50),  # Smooth
-    'SqExp40': partial(squared_exponential_kernel, length=40),
-    'SqExp30': partial(squared_exponential_kernel, length=30),
-    'SqExp25': partial(squared_exponential_kernel, length=25),
-    'SqExp15': partial(squared_exponential_kernel, length=15),
-    'SqExp10': partial(squared_exponential_kernel, length=10),
-    'SqExp09': partial(squared_exponential_kernel, length=9),
-    'SqExp08': partial(squared_exponential_kernel, length=8),
-    'SqExp07': partial(squared_exponential_kernel, length=7),
-    'SqExp06': partial(squared_exponential_kernel, length=6),
-    'SqExp05': partial(squared_exponential_kernel, length=5),
-    'SqExp04': partial(squared_exponential_kernel, length=4),
-    'SqExp03': partial(squared_exponential_kernel, length=3),
-    'SqExp02': partial(squared_exponential_kernel, length=2),
-    'SqExp01': partial(squared_exponential_kernel, length=1),  # Rough
-}
 
 
 
@@ -450,15 +429,21 @@ class LoadingScheme(ABC):
     build a set of scaled loading functions. When called, a LoadingScheme 
     realizes itself on a grid defined by `points`."""
 
-    def __init__(self):
+    def __init__(self, n_fcns: int) -> None:
+
+        if n_fcns > len(self.loading_fcns):
+            raise Exception(("Too many loading functions requested! "
+                             f"There are {len(self.loading_fcns)} available."))
         if not self._compatible_fcns():
             raise Exception("Loading functions do not having matching dimensions!")
         if not len(self.loading_fcns) == len(self.scales):
             raise Exception("Number of loading functions differs from number of scales!")
         
+        self.n_fcns = n_fcns
+
     def __call__(self, points: torch.Tensor) -> torch.Tensor:
-        vals = torch.zeros(self.ncomps, len(points), dtype=torch.float64)
-        for k in range(self.ncomps):
+        vals = torch.zeros(self.n_fcns, len(points), dtype=torch.float64)
+        for k in range(self.n_fcns):
             fcn = self.loading_fcns[k]()
             vals[k] = fcn(points) * self.scales[k]
         return vals
@@ -478,10 +463,6 @@ class LoadingScheme(ABC):
     def ndim(self):
         pass
 
-    @property
-    def ncomps(self):
-        return len(self.loading_fcns)
-
     def _compatible_fcns(self):
         ndims = []
         for fcn in self.loading_fcns:
@@ -489,7 +470,7 @@ class LoadingScheme(ABC):
         return all(d == self.ndim for d in ndims)
     
 
-class TrigLoadingScheme1D2K(LoadingScheme):
+class TrigLoadingScheme1D(LoadingScheme):
 
     ndim = 1
     loading_fcns = [
@@ -499,7 +480,7 @@ class TrigLoadingScheme1D2K(LoadingScheme):
     scales = [1, 1]
 
 
-class BumpLoadingScheme1D2K(LoadingScheme):
+class BumpLoadingScheme1D(LoadingScheme):
 
     ndim = 1
     loading_fcns = [
@@ -509,17 +490,7 @@ class BumpLoadingScheme1D2K(LoadingScheme):
     scales = [1, 1]
 
 
-class BumpLoadingScheme2D2K(LoadingScheme):
-
-    ndim = 2
-    loading_fcns = [
-        CornerPairLoading2D1, 
-        CornerPairLoading2D2
-    ]
-    scales = [1, 1]
-
-
-class BumpLoadingScheme2D4K(LoadingScheme):
+class BumpLoadingScheme2D(LoadingScheme):
 
     ndim = 2
     loading_fcns = [
@@ -531,17 +502,7 @@ class BumpLoadingScheme2D4K(LoadingScheme):
     scales = [1, 1, 1, 1]
 
 
-class NetLoadingScheme2D2K(LoadingScheme):
-
-    ndim = 2
-    loading_fcns = [
-        DefaultNetLoading2D,
-        ExecutiveNetLoading2D,
-    ]
-    scales = [1, 1]
-
-
-class NetLoadingScheme2D4K(LoadingScheme):
+class NetLoadingScheme2D(LoadingScheme):
 
     ndim = 2
     loading_fcns = [
@@ -553,7 +514,7 @@ class NetLoadingScheme2D4K(LoadingScheme):
     scales = [1, 1, 1, 1]
         
 
-class BumpLoadingScheme3D4K(LoadingScheme):
+class BumpLoadingScheme3D(LoadingScheme):
 
     ndim = 3
     loading_fcns = [
@@ -567,15 +528,13 @@ class BumpLoadingScheme3D4K(LoadingScheme):
 
 LOADING_SCHEMES = {
 
-    'TrigScheme1D2K': TrigLoadingScheme1D2K,
+    'TrigScheme1D': TrigLoadingScheme1D,
 
-    'BumpScheme1D2K': BumpLoadingScheme1D2K,
-    'BumpScheme2D2K': BumpLoadingScheme2D2K,
-    'BumpScheme2D4K': BumpLoadingScheme2D4K,
-    'BumpScheme3D4K': BumpLoadingScheme3D4K,
+    'BumpScheme1D': BumpLoadingScheme1D,
+    'BumpScheme2D': BumpLoadingScheme2D,
+    'BumpScheme3D': BumpLoadingScheme3D,
 
-    'NetScheme2D2K': NetLoadingScheme2D2K,
-    'NetScheme2D4K': NetLoadingScheme2D4K
+    'NetScheme2D': NetLoadingScheme2D,
 
 }
 
@@ -1191,6 +1150,9 @@ def simulate_ffm_data(
     n_err_fcns = err.shape[0]
 
     # Scale error functions
+    # NOTE: By scaling each error function by a coefficient drawn from a 
+    # zero-mean distribution with unit variance, we permit a simple closed 
+    # form for the spatial error covariance which we use later. 
     err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
     err *= err_coeffs.view(n_err_fcns, 1, *[1]*ndim_space)
 
@@ -1206,6 +1168,9 @@ def simulate_ffm_data(
         local_numel += torch.numel(comp_local)
     norm_global = math.sqrt(global_frob / global_numel)
     norm_local = math.sqrt(local_frob / local_numel)
+
+    # Yield the global and local norms for scaling of "truth"
+    yield norm_global, norm_local
 
     # Yield data in desired global-to-local ratio
     for comp_global, comp_local in _gen_global_local_batches():
@@ -1225,8 +1190,13 @@ if __name__ == '__main__':
         help="Configuration (i.e., mode) in which to run script."
     )
     parser.add_argument(
-        '--dir',
+        '--dir_dataset',
         help="Dataset directory in which simulated data will be stored."
+    )
+    parser.add_argument(
+        '--dir_out',
+        help=("Output directory in which loadings, factors, and error "
+              "covariance will be stored.")
     )
     parser.add_argument(
         '--n_time', type=int,
@@ -1238,7 +1208,7 @@ if __name__ == '__main__':
         help="Shape of the spatial grid on which to simulate data."
     )
     parser.add_argument(
-        '--factor_kernel', type=str,
+        '--factor_kernel_length', type=int,
         help="Kernel to use when simulating factors from MVN."
     )
     parser.add_argument(
@@ -1248,6 +1218,10 @@ if __name__ == '__main__':
     parser.add_argument(
         '--err_scheme', type=str,
         help="Error scheme used to simulate data."
+    )
+    parser.add_argument(
+        '--n_facs', type=int,
+        help="Number of factors in global component."
     )
     parser.add_argument(
         '--delta', type=float,
@@ -1262,6 +1236,15 @@ if __name__ == '__main__':
         help="Maximumum number of time points to include in each file."
     )
     parser.add_argument(
+        '--refresh_dirs', action='store_true',
+        help="Flag for refreshing /datasets and /out directories."
+    )
+    parser.add_argument(
+        '--dir_truth', type=str,
+        help=("Directory in which to store true loadings, factors, and "
+              "errors.If None, then do not save.")
+    )
+    parser.add_argument(
         '--seed', default=12345, type=int,
         help="Integer used to seed generator."
     )
@@ -1270,7 +1253,7 @@ if __name__ == '__main__':
     # Configure globals
     config = load_config(args.config)
     gen = torch.Generator().manual_seed(args.seed)
-    load_scheme = LOADING_SCHEMES[args.load_scheme]()
+    load_scheme = LOADING_SCHEMES[args.load_scheme](args.n_facs)
     err_scheme = ERROR_SCHEMES[args.err_scheme](args.delta, args.n_time, gen)
     sz = [args.n_time] + args.sz_space
 
@@ -1289,8 +1272,10 @@ if __name__ == '__main__':
 
     print("Preparing indices and points...")
 
-    # Delete files from directory
-    refresh_directory(args.dir)
+    # Refresh directories
+    if args.refresh_dirs:
+        refresh_directory(args.dir_dataset)
+        refresh_directory(args.dir_out)
 
     # Generate `points_space` and `indices_space` from `sz_space`
     points_space_list = []
@@ -1318,16 +1303,15 @@ if __name__ == '__main__':
 
     # Build factor tensor
     print("Preparing factors...")
-    n_facs = len(load_scheme.loading_fcns)
-    kernel = FACTOR_KERNELS[args.factor_kernel]
-    facs = simulate_gauss_procs(points_time, n_facs, kernel, gen).t()  # n_time-by-n_facs
+    kernel = partial(squared_exponential_kernel, length=args.factor_kernel_length)
+    facs = simulate_gauss_procs(points_time, args.n_facs, kernel, gen).t()  # n_time-by-n_facs
 
-    # Build error tensor
+    # Build error tensor, then scale error tensor by coefficients
     # TODO: Is there a way to accelerate error generation? Currently much slower
     # than loading/factor generation. Cache error schemes?
     print("Preparing errors....")
-    vals = err_scheme(points)  # n_fcns-by-n_time-by-sz_shape (sparse)
-    errs = build_errors(indices, sz, vals)
+    vals = err_scheme(points)  
+    errs = build_errors(indices, sz, vals)  # n_fcns-by-n_time-by-sz_shape (sparse)
 
 
     # ---------- DATA SIMULATION ---------- #
@@ -1341,7 +1325,26 @@ if __name__ == '__main__':
         args.batch_size,
         gen=gen
     )
-    write_generated_tensor(dataloader, args.dir, 'data-full')
+    norm_global, norm_local = next(dataloader)
+    write_generated_tensor(dataloader, args.dir_dataset, 'data-full')
+
+    # Write (properly scaled) tensors
+    # NOTE: (Loading and error scaling)
+    #   To control the signal-to-noise ratio, we scale the global and local
+    #   components of our data by p/||comp_glob|| and (1-p)/||comp_loc||, 
+    #   respectively. This means that the "true" loadings and errors are not
+    #   `loads` and `errs`, but these quantities scaled by the aforementioned
+    #   factors. 
+    if args.dir_truth is not None:
+        torch.save(
+            loads * args.prop_global / norm_global, 
+            os.path.join(args.dir_truth, 'loads.pt')
+        )
+        torch.save(facs, os.path.join(args.dir_truth, 'facs.pt'))
+        torch.save(
+            errs * (1 - args.prop_global) / norm_local, 
+            os.path.join(args.dir_truth, 'errs.pt')
+        )
 
     print("DONE!")
 

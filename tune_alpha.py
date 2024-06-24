@@ -1,5 +1,6 @@
 import argparse
 import os
+import pandas as pd
 import torch
 
 from config import load_config
@@ -13,70 +14,87 @@ from utils.utils import (
 from utils.model import LowRankCovariance
 
 
-ALPHAS = [0, 1, 10] # , 100, 1000, 10000]
+ALPHAS = [0, 0.001, 0.01, 0.1, 1] # , 100, 1000, 10000]
 
 
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
+    parser.add_argument('--est_method', type=str, choices=['lbfgs', 'dsgd'])
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--world_size', type=int)
-    parser.add_argument('--grid_shape', type=int, nargs='+')
-    parser.add_argument('--num_facs', type=int)
-    parser.add_argument('--delta', type=float)
-    parser.add_argument(
-        '--init_method', type=str, 
-        choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
-    )
-    parser.add_argument('--init_prop', type=float, default=1.0)
+    parser.add_argument('--sz_space', type=int, nargs='+')
+    parser.add_argument('--n_facs', type=int)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
+    parser.add_argument('--history_size', type=int)
+    parser.add_argument('--tol', type=float)
+    parser.add_argument('--patience', type=int)
     parser.add_argument('--max_epochs', type=int, default=100)
-    parser.add_argument('--seed', type=int, default=12345)
+    parser.add_argument('--seed', type=int)
+    parser.add_argument('--benchmark', action='store_true')
     parser.add_argument('--silent_fail', action='store_true')
     args = parser.parse_args()
+
+    # Validate command-line arguments
+    if args.est_method == 'lbfgs':
+        assert args.history_size is not None, "Must pass history size!"
+    if args.est_method == 'dsgd':
+        assert args.world_size is not None, "Must pass world size!"
+        assert args.batch_size is not None, "Must pass batch size!"
+        assert args.seed is not None, "Msut pass seed!"
 
     config = load_config(args.config)
     raise_error = not args.silent_fail
 
     # Directory/path preparation
-    dir_cov = os.path.join(args.dir_out_scratch, 'cov')
-    path_alpha = os.path.join(args.dir_out, 'alpha.pt')
-    path_out_mod = os.path.join(args.dir_out, 'model-train.pth')  # estimation.py output path
-    path_best_mod = os.path.join(args.dir_out, 'model-train-best.pth')
+    dir_cov = os.path.join(args.dir_out_scratch, f'cov-{args.est_method}')
+    path_alpha = os.path.join(args.dir_out, f'alpha-{args.est_method}.pt')
+    path_out_mod = os.path.join(args.dir_out, f'model-{args.est_method}-train.pth')  # estimation.py output path
+    path_best_mod = os.path.join(args.dir_out, f'model-{args.est_method}-train-best.pth')
+
+    # Build path/flags
+    path = os.path.join(config.root, f'estimate_loads_{args.est_method}.py')
+    flags = {
+        'config': args.config,
+        'dir_out': args.dir_out,
+        'dir_out_scratch': args.dir_out_scratch,
+        'split': 'train',
+        'sz_space': args.sz_space,
+        'n_facs': args.n_facs,
+        'lr': args.lr,
+        'tol': args.tol,
+        'patience': args.patience,
+        'max_epochs': args.max_epochs,
+    }
+    if args.est_method == 'lbfgs':
+        flags['history_size'] = args.history_size
+    if args.est_method == 'dsgd': 
+        flags['world_size'] = args.world_size
+        flags['batch_size'] = args.batch_size
+        flags['seed'] = args.seed
+    if args.benchmark:
+        flags['benchmark'] = None
 
     # Estimate model for various alphas
+    results = pd.DataFrame(columns=['alpha', 'valid_loss'])
     best_alpha = None
     best_valid_loss = float('inf')
     for alpha in ALPHAS:
-
-        # Estimate model with current alpha
-        path = os.path.join(config.root, f'factor_model_ddp.py')
-        flags = {
-            'config': args.config,
-            'dir_out': args.dir_out,
-            'dir_out_scratch': args.dir_out_scratch,
-            'world_size': args.world_size,
-            'split': 'train',
-            'grid_shape': args.grid_shape,
-            'num_facs': args.num_facs,
-            'alpha': alpha,
-            'delta': args.delta,
-            'init_method': args.init_method,
-            'init_prop': args.init_prop,
-            'batch_size': args.batch_size,
-            'lr': args.lr,
-            'max_epochs': args.max_epochs
-        }
+        flags['alpha'] = alpha
         execute_script(path, flags, raise_error)
 
         # Compute validation loss
         loads = torch.load(path_out_mod)['loads']
         model = model_from_loads(loads)
-        valid_loss = compute_loss(model, dir_cov, 'valid')
+        valid_loss = compute_loss(model, dir_cov, 'valid').item()
         print(f"alpha = {alpha} | valid_loss = {valid_loss}")
+        
+        # Add row to dataframe
+        row = {'alpha': alpha, 'valid_loss': valid_loss}
+        results = pd.concat([results, pd.DataFrame([row])])
 
         # Break from loop if improvement stops or update best model
         if valid_loss > best_valid_loss:
@@ -90,3 +108,7 @@ if __name__ == '__main__':
     # be saved.
     torch.save(torch.tensor(best_alpha, dtype=torch.float64), path_alpha)
     os.replace(path_best_mod, path_out_mod)
+
+    # Write dataframe of results to file
+    path = os.path.join(args.dir_out, f'alpha-results-{args.est_method}.csv')
+    results.to_csv(path, index=False)

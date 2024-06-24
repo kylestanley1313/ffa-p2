@@ -9,25 +9,90 @@ from typing import Iterable, List, Optional
 __all__ = [
 
     # Datsets
+    'CentralizedCovarianceDataset',
+    'DistributedCovarianceDataset',
     'DistributedStratifiedCovarianceDataset',
 
     # Samplers
+    'DistributedDatasetSampler',
     'DistributedStratifiedDatasetBatchSampler',
     'DistributedStratifiedDatasetSampler',
 
     # DataLoaders
+    'BasicDataLoader',
     'StratifiedDataLoader',
-    'StratifiedTorchDataLoader'
+    'StratifiedTorchDataLoader',
+
 ]
 
 
+
 # -------------------- DATASETS -------------------- # 
+
+
+class CentralizedCovarianceDataset(Dataset):
+
+    def __init__(self, dir: str, split: str) -> None:
+        self.points = torch.load(os.path.join(dir, f'points.pt'))
+        self.cov = torch.load(os.path.join(dir, f'cov-{split}.pt'))
+
+    def __len__(self):
+        return len(self.cov)
+    
+    def __getitem__(self, index):
+        return self.points[index], self.cov[index]
+    
+    def storage(self):
+        """Returns size of dataset (in bytes)."""
+        points_sz = sys.getsizeof(self.points.untyped_storage())
+        cov_sz = sys.getsizeof(self.cov.untyped_storage())
+        return points_sz + cov_sz
+    
+
+
+
+class DistributedCovarianceDataset(Dataset):
+
+    def __init__(
+            self, 
+            dir: str, 
+            split: str,
+            rank: int, 
+            world_size: int
+        ) -> None:
+
+        # Get point counts for all ranks and save points for this rank
+        self.rank_counts = {}
+        for r in range(world_size):
+            path = os.path.join(dir, f'points-{rank}.pt')
+            points = torch.load(path)
+            self.rank_counts[r] = len(points)
+            if rank == r:
+                self.points = points
+
+        # Get covariance for this rank
+        path = os.path.join(dir, f'cov-{split}-{rank}.pt')
+        self.cov = torch.load(path)
+
+    def __len__(self):
+        return len(self.cov)
+
+    def __getitem__(self, index):
+        return self.points[index], self.cov[index]
+    
+    def storage(self):
+        """Returns size of dataset (in bytes)."""
+        points_sz = sys.getsizeof(self.points.untyped_storage())
+        cov_sz = sys.getsizeof(self.cov.untyped_storage())
+        return points_sz + cov_sz
+
 
 class DistributedStratifiedCovarianceDataset(Dataset):
 
     def __init__(
             self, 
             dir: str, 
+            split: str,
             rank: int, 
             world_size: int, 
         ) -> None:
@@ -35,12 +100,8 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         # Read in this rank's data
         strat = torch.load(os.path.join(dir, f'strat-{rank}.pt'))
         points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
-        cov_train = torch.load(os.path.join(dir, f'cov-train-{rank}.pt'))
+        cov = torch.load(os.path.join(dir, f'cov-{split}-{rank}.pt'))
         
-        # Set validation points/cov
-        self.points_valid = points
-        self.cov_valid = torch.load(os.path.join(dir, f'cov-valid-{rank}.pt'))
-
         # Create dictionaries that map stratum to train points/cov
         num_strata = 2 * world_size + 1
         self.strat_points = {}
@@ -48,11 +109,7 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         for s in range(num_strata):
             mask = strat == s
             self.strat_points[s] = points[mask]
-            self.strat_cov[s] = cov_train[mask]
-        
-        # Placeholder attributes set by methods
-        self.points = None
-        self.cov = None
+            self.strat_cov[s] = cov[mask]
 
     def __len__(self):
         return len(self.cov)
@@ -64,27 +121,34 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         self.points = self.strat_points[stratum]
         self.cov = self.strat_cov[stratum]
 
-    def set_training(self):
+    def set_full_dataset(self):
         self.points = torch.cat(list(self.strat_points.values()))
         self.cov = torch.cat(list(self.strat_cov.values()))
-
-    def set_validation(self):
-        self.points = self.points_valid
-        self.cov = self.cov_valid
     
     def storage(self):
         """Returns size of dataset (in bytes)."""
-        self.set_training()
+        self.set_full_dataset()
         points_sz = sys.getsizeof(self.points.untyped_storage())
         cov_sz = sys.getsizeof(self.cov.untyped_storage())
-        self.set_validation()
-        points_sz += sys.getsizeof(self.points.untyped_storage())
-        cov_sz += sys.getsizeof(self.cov.untyped_storage())
         return points_sz + cov_sz
     
 
 
 # -------------------- SAMPLERS -------------------- #
+
+class DistributedDatasetSampler(Sampler):
+
+    def __init__(self, dataset, gen):
+        self.dataset = dataset
+        self.gen = gen
+        self.n_iters = max(dataset.rank_counts.values())
+
+    def __iter__(self):
+        idx = torch.randperm(len(self.dataset), generator=self.gen)
+        pad_size = self.n_iters - len(idx)
+        idx_pad = torch.randperm(len(idx), generator=self.gen)[:pad_size]
+        return iter(idx.tolist() + idx_pad.tolist())
+
 
 class DistributedStratifiedDatasetSampler(Sampler):
 
@@ -129,7 +193,31 @@ class DistributedStratifiedDatasetBatchSampler(object):
             return quotient + 1
         
 
+
 # -------------------- DATALOADERS -------------------- #
+        
+class BasicDataLoader(object):
+
+    def __init__(self, dataset, sampler, batch_size):
+        self.dataset = dataset
+        self.sampler = sampler
+        self.batch_size = batch_size
+
+    def __iter__(self):
+        curr_batch = torch.zeros(self.batch_size, dtype=torch.int32)
+        cnt = 0
+        for idx in self.sampler:
+            curr_batch[cnt] = idx
+            cnt += 1
+            if cnt == self.batch_size:
+                yield self.dataset[curr_batch]
+                curr_batch = torch.zeros(self.batch_size, dtype=torch.int32)
+                cnt = 0
+
+        # Yield the last batch if it's not a complete batch
+        if cnt > 0:
+            yield self.dataset[curr_batch[:cnt]]
+            
         
 class StratifiedDataLoader(object):
 
@@ -164,11 +252,8 @@ class StratifiedDataLoader(object):
     def set_stratum(self, stratum):
         self.dataset.set_stratum(stratum)
 
-    def set_training(self):
-        self.dataset.set_training()
-
-    def set_validation(self):
-        self.dataset.set_validation()
+    def set_full_dataset(self):
+        self.dataset.set_full_dataset()
 
     def _get_iterator(self):
         if self.sampler:
@@ -230,8 +315,5 @@ class StratifiedTorchDataLoader(DataLoader):
     def set_stratum(self, stratum):
         self.dataset.set_stratum(stratum)
 
-    def set_training(self):
-        self.dataset.set_training()
-
-    def set_validation(self):
-        self.dataset.set_validation()
+    def set_full_dataset(self):
+        self.dataset.set_full_dataset()

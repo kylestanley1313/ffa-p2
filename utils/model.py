@@ -12,17 +12,17 @@ class LowRankCovariance(nn.Module):
 
     def __init__(
             self, 
-            num_vars: int, 
-            num_facs: int, 
+            n_vars: int, 
+            n_facs: int, 
             path_init: Optional[str] = None
         ):
         super().__init__()
-        self.num_vars = num_vars
-        self.num_facs = num_facs
+        self.n_vars = n_vars
+        self.n_facs = n_facs
         if path_init:
             self.loads = torch.load(path_init)
         else:
-            self.loads = torch.randn(num_vars, num_facs, dtype=torch.float64)
+            self.loads = torch.randn(n_vars, n_facs, dtype=torch.float64)
         self.loads.requires_grad_()
         self.loads = nn.Parameter(self.loads)
 

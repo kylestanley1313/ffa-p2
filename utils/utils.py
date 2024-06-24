@@ -6,8 +6,9 @@ import shutil
 import subprocess
 import sys
 import torch
+import torch.distributed as dist
 import yaml
-from typing import Dict, Generator, List, Union
+from typing import Callable, Dict, Generator, List, Union
 
 from utils.model import LowRankCovariance
 
@@ -77,6 +78,21 @@ def multiply_list(list_: List[Union[int, float]]):
     return out
 
 
+def init_process(
+        rank: int, 
+        world_size: int, 
+        fcn: Callable, 
+        path_shared: str,
+        backend: str,
+        **kwargs
+    ):
+    dist.init_process_group(
+        backend, init_method=f'file://{path_shared}',
+        rank=rank, world_size=world_size
+    )
+    fcn(rank, world_size, **kwargs)
+
+
 def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
 
     # Compile arguments for subprocess.run()
@@ -118,21 +134,6 @@ def safe_l2_normalization(
     return input
 
 
-def loss_fcn(preds, cov, num_vars):
-    return torch.sum((preds - cov) ** 2) / num_vars ** 2
-
-
-def compute_loss(model, dir_cov, split):
-    num_vars = model.loads.shape[0]
-    points_loader = read_tensors(dir_cov, 'points')
-    cov_loader = read_tensors(dir_cov, f'cov-{split}')
-    loss = 0
-    for points, cov in zip(points_loader, cov_loader):
-        preds = model(points)
-        loss += loss_fcn(preds, cov, num_vars)
-    return loss
-
-
 def model_from_loads(loads):
     model = LowRankCovariance(loads.shape[0], loads.shape[1])
     model.set_loads(loads)
@@ -153,7 +154,6 @@ def get_points_from_grid_shape(grid_shape: torch.Tensor):
         p = torch.arange(sz, dtype=torch.int32) / sz
         points.append(p)
     return torch.cartesian_prod(*points)
-
 
 
 class ReshapingIndexMap(object):
@@ -249,6 +249,34 @@ class ReshapingIndexMap(object):
         
 
 
+# -------------------- OBJECTIVE FUNCTIONS -------------------- #
+
+def loss_fcn(preds, cov, n_vars):
+    return torch.sum((preds - cov) ** 2) / n_vars ** 2
+
+
+def penalty_fcn(loads: torch.Tensor, alpha: float, diff_mat: torch.Tensor):
+    n_vars, n_facs = loads.shape
+    return alpha * torch.trace(loads.t() @ diff_mat @ loads) / n_vars / n_facs
+
+
+def penalty_fcn_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
+    n_vars, n_facs = loads.shape
+    return 2 * diff_mat @ loads / n_vars / n_facs
+
+
+def compute_loss(model, dir_cov, split):
+    n_vars = model.loads.shape[0]
+    points_loader = read_tensors(dir_cov, 'points')
+    cov_loader = read_tensors(dir_cov, f'cov-{split}')
+    loss = 0
+    for points, cov in zip(points_loader, cov_loader):
+        preds = model(points)
+        loss += loss_fcn(preds, cov, n_vars)
+    return loss
+
+
+
 # -------------------- SPARSE MATRICES -------------------- #
         
 def slice_sparse_coo_tensor(
@@ -341,13 +369,13 @@ def create_second_difference_matrix(grid_shape):
     # Over-allocate memory for `idx` and `vals`.
     # Note that each interior diag cell touches 3^d - 1 off-diag cells.
     ndim = len(grid_shape)
-    num_vars = multiply_list(grid_shape)
+    n_vars = multiply_list(grid_shape)
     fill_val = -2
-    idx = torch.full((2, num_vars * 3 ** ndim), fill_val, dtype=torch.int32)
-    vals = torch.full((num_vars * 3 ** ndim,), fill_val, dtype=torch.float64)
+    idx = torch.full((2, n_vars * 3 ** ndim), fill_val, dtype=torch.int32)
+    vals = torch.full((n_vars * 3 ** ndim,), fill_val, dtype=torch.float64)
 
     # Build `idx` and `vals`
-    idx_map = ReshapingIndexMap(grid_shape + grid_shape, [num_vars, num_vars])
+    idx_map = ReshapingIndexMap(grid_shape + grid_shape, [n_vars, n_vars])
     idx_grid = get_indices_from_grid_shape(grid_shape)
     diag_val = 3 ** ndim - 1
     off_diag_shifts = OFF_DIAG_SHIFTS[ndim]
@@ -383,7 +411,7 @@ def create_second_difference_matrix(grid_shape):
     diff_mat = torch.sparse_coo_tensor(
         indices=idx[:,:cnt], 
         values=vals[:cnt],
-        size=[num_vars, num_vars]
+        size=[n_vars, n_vars]
     )
                 
     return diff_mat
@@ -401,12 +429,12 @@ def flatten_dataset(dir_in: str, dir_out: str) -> List[int]:
         path_in = os.path.join(dir_in, files[i])
         data = torch.load(path_in)
         
-        # Get `grid_shape` and `num_vars` from first data file
+        # Get `grid_shape` and `n_vars` from first data file
         if i == 0:
             grid_shape = list(data.shape[1:])
-            num_vars = multiply_list(grid_shape)
+            n_vars = multiply_list(grid_shape)
         
-        data = data.reshape(len(data), num_vars)
+        data = data.reshape(len(data), n_vars)
         path_out = os.path.join(dir_out, files[i])
         torch.save(data, path_out)
 
@@ -433,15 +461,15 @@ def gen_points(grid_shape: List[int], delta: float, batch_size: int) -> Generato
     covariance tensor in batches."""
 
     ndim = len(grid_shape)
-    num_vars = multiply_list(grid_shape)
+    n_vars = multiply_list(grid_shape)
 
-    if batch_size < num_vars: 
-        raise Exception("Must have batch_size >= num_vars")
+    if batch_size < n_vars: 
+        raise Exception("Must have batch_size >= n_vars")
 
     indices = get_indices_from_grid_shape(grid_shape)
     bandwidths = torch.tensor([math.ceil(grid_shape[d]*delta) for d in range(ndim)])
 
-    idx_map = ReshapingIndexMap(grid_shape + grid_shape, [num_vars, num_vars])
+    idx_map = ReshapingIndexMap(grid_shape + grid_shape, [n_vars, n_vars])
     start_new_batch = True
     leftovers = None
     for cp_batch in gen_cartesian_prod(indices): 

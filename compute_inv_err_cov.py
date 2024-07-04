@@ -15,9 +15,6 @@ from utils.utils import (
 )
 
 
-from utils.plotting import plot_heatmap, plot_side_by_side_heatmaps
-
-
 
 def get_thresholded_epairs(err_cov, cutoff):
     """Implictly project the passed error covariance onto the space of 
@@ -251,8 +248,8 @@ if __name__ == '__main__':
             batch_size=args.batch_size
         )
         for i, rows in enumerate(inv_err_cov_loader):
-            path = os.path.join(args.dir_truth, f"inv-err-cov_r{args.regime}_{i}.pt")
-            torch.save(torch.tensor(rows).to(torch.float64), path)
+            path = os.path.join(args.dir_truth, f'inv-err-cov_r{args.regime}_{i}.npy')
+            np.save(path, rows)
 
     if args.regime in [2, 3]:
 
@@ -305,6 +302,6 @@ if __name__ == '__main__':
 
         # Write inverse in batches
         for i, rows in enumerate(inv_err_cov_loader):
-            path = os.path.join(args.dir_out, 'inv-err-cov', f"inv-err-cov_r{args.regime}_{i}.pt")
-            torch.save(torch.tensor(rows).to(torch.float64), path)
+            path = os.path.join(args.dir_out, 'err-cov', f'inv-err-cov_r{args.regime}_{i}.npy')
+            np.save(path, rows)
 

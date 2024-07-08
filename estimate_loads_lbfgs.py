@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -10,7 +11,9 @@ from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.data import CentralizedCovarianceDataset
 from utils.model import LowRankCovariance
-from utils.utils import (
+from utils import (
+    CODE_DIVERGENCE,
+    CODE_NO_CONVERGENCE,
     create_second_difference_matrix,
     gen_seeds, 
     init_process,
@@ -116,13 +119,17 @@ def train(
 
     if diverged: 
         print(f"Error: Divergence after {epoch + 1} epochs.")
+        return CODE_DIVERGENCE
 
     else: 
         if not early_stop:
             print(f"Warning: No convergence after {epoch + 1} epochs.")
+            return CODE_NO_CONVERGENCE
         
         # Save model (even if no convergence)
         torch.save(model.state_dict(), path_model)
+
+    return 0
 
 
 if __name__ == '__main__':
@@ -140,6 +147,7 @@ if __name__ == '__main__':
     parser.add_argument('--tol', type=float)
     parser.add_argument('--patience', type=int)
     parser.add_argument('--max_epochs', type=int, default=100)
+    parser.add_argument('--fail_no_convergence', action='store_true')
     args = parser.parse_args()
     
     config = load_config(args.config)
@@ -156,7 +164,7 @@ if __name__ == '__main__':
     # ---------- ESTIMATION ---------- #
     print("Fitting model...")
 
-    train(
+    code = train(
         dir_out=args.dir_out,
         dir_out_scratch=args.dir_out_scratch,
         split=args.split,
@@ -169,6 +177,8 @@ if __name__ == '__main__':
         patience=args.patience,
         max_epochs=args.max_epochs
     )
+    sys.exit(code)
+
 
 
 

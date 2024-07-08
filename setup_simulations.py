@@ -4,7 +4,7 @@ import torch
 import os
 
 from config import load_config
-from utils.utils import gen_seeds, load_yaml, refresh_directory, write_yaml
+from utils import gen_seeds, load_yaml, refresh_directory, write_yaml
 
 
 if __name__ == '__main__':

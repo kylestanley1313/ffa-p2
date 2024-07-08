@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -13,7 +14,9 @@ from utils.data import (
     DistributedStratifiedDatasetBatchSampler,
     StratifiedDataLoader,
 )
-from utils.utils import (
+from utils import (
+    CODE_DIVERGENCE,
+    CODE_NO_CONVERGENCE,
     gen_seeds, 
     init_process,
     loss_fcn,
@@ -243,10 +246,12 @@ def train(
 
         if diverged: 
             print(f"Error: Divergence after {epoch + 1} epochs.")
+            sys.exit(CODE_DIVERGENCE)
 
         else: 
             if not early_stop:
                 print(f"Warning: No convergence after {epoch + 1} epochs.")
+                sys.exit(CODE_NO_CONVERGENCE)
             
             # Save model (even if no convergence)
             torch.save(model.state_dict(), path_model)
@@ -328,4 +333,7 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
+
+    # Exit script according to status of 0th worker
+    sys.exit(processes[0].exitcode)
 

@@ -10,10 +10,11 @@ from scipy.interpolate import BSpline, splrep
 from typing import Callable, Generator, List, Sequence, Union
 
 from config import load_config
-from utils.utils import (
+from utils import (
     gen_seeds,
     multiply_list,
     refresh_directory, 
+    reshape_sparse_coo_tensor,
     safe_l2_normalization, 
     slice_sparse_coo_tensor,
     write_generated_tensor
@@ -1336,6 +1337,9 @@ if __name__ == '__main__':
     #   `loads` and `errs`, but these quantities scaled by the aforementioned
     #   factors. 
     if args.dir_truth is not None:
+        n_vars = multiply_list(loads.shape[1:])
+        loads = loads.reshape(loads.shape[0], n_vars)
+        errs = reshape_sparse_coo_tensor(errs, [*errs.shape[:2], n_vars])
         torch.save(
             loads * args.prop_global / norm_global, 
             os.path.join(args.dir_truth, 'loads.pt')

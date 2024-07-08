@@ -4,7 +4,13 @@ import torch
 from typing import Dict
 
 from config import load_config
-from utils.utils import execute_script, load_yaml, refresh_directory
+from utils import (
+    CODE_DIVERGENCE,
+    CODE_NO_CONVERGENCE,
+    execute_script, 
+    load_yaml, 
+    refresh_directory
+)
 
 
 def get_all_rep_paths(config, design_id): 
@@ -68,7 +74,7 @@ if __name__ == '__main__':
             'n_facs': rep['n_facs'],
             'delta': rep['delta'],
             'prop_global': rep['prop_global'],
-            'batch_size': 1000,
+            'batch_size': 100,
             'seed': rep['seed'],
         }
         if rep['id'].endswith('-0'):  # Write true loads, facs, errs
@@ -119,12 +125,13 @@ if __name__ == '__main__':
             if args.benchmark:
                 flags['benchmark'] = None
             execute_script(path, flags, raise_error)
-                
+
 
     print(f"\n{'====='*8} ALPHA TUNING {'====='*8}\n")
     for est_method in args.est_methods:
         if est_method in ['lbfgs', 'dsgd']:
             print(f"\n{'-----'*8} {est_method.upper()} {'-----'*8}\n")
+            errors = {}
             for rep in reps: 
                 print(f"\n{'-----'*4} {rep['id']} {'-----'*4}\n")
                 path = os.path.join(config.root, 'tune_alpha.py')
@@ -160,12 +167,20 @@ if __name__ == '__main__':
 
                 if args.benchmark and est_method == 'dsgd':
                     flags['benchmark'] = None
-                execute_script(path, flags, raise_error)
-
+                # print(f"flags = {flags}")
+                # exit(0)
+                code = execute_script(path, flags, raise_error)
+                if code != 0:
+                    if code in errors: 
+                        errors[code].append(rep['id'])
+                    else: 
+                        errors[code] = [rep['id']]
+            print(f"errors = {errors}")
 
     print(f"\n{'====='*8} ESTIMATION {'====='*8}\n")
     for est_method in args.est_methods:
         print(f"\n{'-----'*8} {est_method.upper()} {'-----'*8}\n")
+        errors = {}
         for rep in reps: 
             print(f"\n{'-----'*4} {rep['id']} {'-----'*4}\n")
             path = os.path.join(config.root, f'estimate_loads_{est_method}.py')
@@ -197,7 +212,7 @@ if __name__ == '__main__':
                 flags = flags | {
                     'world_size': rep['world_size_est'],
                     'batch_size': 128,
-                    'lr': 1,
+                    'lr': 1000, # 1,
                     'tol': 1e-7,
                     'patience': 5,
                     'max_epochs': 5000,
@@ -217,7 +232,13 @@ if __name__ == '__main__':
 
             if args.benchmark and est_method in ['dsgd', 'dssgd']:
                 flags['benchmark'] = None
-            execute_script(path, flags, raise_error)
+            code = execute_script(path, flags, raise_error)
+            if code != 0:
+                if code in errors: 
+                    errors[code].append(rep['id'])
+                else: 
+                    errors[code] = [rep['id']]
+        print(f"errors = {errors}")
 
 
 

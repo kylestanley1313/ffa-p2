@@ -8,7 +8,7 @@ from skfda.representation.basis import Basis, BSplineBasis
 from typing import Callable, Generator
 
 from config import load_config
-from utils.utils import (
+from utils import (
     get_array_gen,
     get_tensor_as_array_gen
 )

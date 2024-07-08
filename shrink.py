@@ -3,7 +3,7 @@ import numpy as np
 import os
 import torch
 
-from utils.utils import compute_loss, model_from_loads
+from utils import compute_loss, model_from_loads
 
 
 KAPPAS = torch.arange(0, 1, step=0.001).tolist()

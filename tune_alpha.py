@@ -1,15 +1,14 @@
 import argparse
 import os
 import pandas as pd
+import sys
 import torch
 
 from config import load_config
-from utils.utils import (
+from utils import (
     compute_loss,
     execute_script, 
-    loss_fcn, 
     model_from_loads,
-    read_tensors
 )
 from utils.model import LowRankCovariance
 
@@ -35,7 +34,6 @@ if __name__ == '__main__':
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--seed', type=int)
     parser.add_argument('--benchmark', action='store_true')
-    parser.add_argument('--silent_fail', action='store_true')
     args = parser.parse_args()
 
     # Validate command-line arguments
@@ -47,7 +45,6 @@ if __name__ == '__main__':
         assert args.seed is not None, "Msut pass seed!"
 
     config = load_config(args.config)
-    raise_error = not args.silent_fail
 
     # Directory/path preparation
     dir_cov = os.path.join(args.dir_out_scratch, f'cov-{args.est_method}')
@@ -84,7 +81,9 @@ if __name__ == '__main__':
     best_valid_loss = float('inf')
     for alpha in ALPHAS:
         flags['alpha'] = alpha
-        execute_script(path, flags, raise_error)
+        code = execute_script(path, flags, False)
+        if code != 0: 
+            sys.exit(code)
 
         # Compute validation loss
         loads = torch.load(path_out_mod)['loads']

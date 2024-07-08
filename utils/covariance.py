@@ -1,7 +1,7 @@
 import os
 import torch
 
-from utils.utils import read_tensors
+from utils import read_tensors
 
 
 __all__ = [

@@ -1,10 +1,10 @@
 import argparse
 import os
+import sys
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from functools import partial
-
 from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import List, Tuple
 
@@ -16,7 +16,9 @@ from utils.data import (
     DistributedDatasetSampler
 )
 from utils.model import LowRankCovariance
-from utils.utils import (
+from utils import (
+    CODE_DIVERGENCE,
+    CODE_NO_CONVERGENCE,
     create_second_difference_matrix, 
     gen_seeds, 
     init_process,
@@ -189,10 +191,12 @@ def train(
 
         if diverged: 
             print(f"Error: Divergence after {epoch + 1} epochs.")
+            sys.exit(CODE_DIVERGENCE)
 
         else: 
             if not early_stop:
                 print(f"Warning: No convergence after {epoch + 1} epochs.")
+                sys.exit(CODE_NO_CONVERGENCE)
             
             # Save model (even if no convergence)
             state_dict = model.state_dict()
@@ -272,4 +276,7 @@ if __name__ == '__main__':
 
     for p in processes:
         p.join()
+
+    # Exit script according to status of 0th worker
+    sys.exit(processes[0].exitcode)
 

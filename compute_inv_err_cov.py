@@ -8,7 +8,7 @@ from slepc4py import SLEPc
 from typing import Generator, Tuple
 
 from config import load_config
-from utils.utils import (
+from utils import (
     compute_covariance,
     gen_points,
     multiply_list

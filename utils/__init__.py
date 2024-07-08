@@ -8,10 +8,15 @@ import sys
 import torch
 import torch.distributed as dist
 import yaml
-from typing import Callable, Dict, Generator, List, Union
+from typing import Callable, Dict, Generator, List, Sequence, Union
 
 from utils.model import LowRankCovariance
 
+
+# -------------------- ERROR CODES -------------------- #
+
+CODE_DIVERGENCE = 51
+CODE_NO_CONVERGENCE = 52
 
 
 # -------------------- MISCELLANEOUS -------------------- #
@@ -35,11 +40,68 @@ def write_generated_tensor(tensor_loader: Generator, dir: str, prefix: str):
         torch.save(batch, path)
 
 
-def read_tensors(dir: str, prefix: str) -> Generator:
+def gen_tensors(dir: str, prefix: str, batch_size: int = None) -> Generator:
     files = sorted(os.listdir(dir))
-    for f in files:
-        if f.startswith(prefix) and f.endswith('.pt'):
-            yield torch.load(os.path.join(dir, f))
+
+    if batch_size is None:  # each batch is a file
+        for f in files:
+            if f.startswith(prefix) and f.endswith('.pt'):
+                yield torch.load(os.path.join(dir, f))
+
+    else: # each batch is of desired size
+        leftover = None
+        for f in files: 
+            if f.startswith(prefix) and f.endswith('.pt'):
+                array = torch.load(os.path.join(dir, f))
+                leftover = array if leftover is None else torch.cat((leftover, array))
+                while len(leftover) >= batch_size:
+                    yield leftover[:batch_size]
+                    leftover = leftover[batch_size:]
+        if leftover is not None and len(leftover) > 0: 
+            yield leftover
+                
+
+def gen_arrays(dir: str, prefix: str, batch_size: int = None) -> Generator:
+    files = sorted(os.listdir(dir))
+
+    if batch_size is None:  # each batch is a file
+        for f in files:
+            if f.startswith(prefix) and f.endswith('.npy'):
+                yield np.load(os.path.join(dir, f))
+
+    else: # each batch is of desired size
+        leftover = None
+        for f in files: 
+            if f.startswith(prefix) and f.endswith('.npy'):
+                array = np.load(os.path.join(dir, f))
+                leftover = array if leftover is None else np.concatenate((leftover, array))
+                while len(leftover) >= batch_size:
+                    yield leftover[:batch_size]
+                    leftover = leftover[batch_size:]
+        if leftover is not None and len(leftover) > 0: 
+            yield leftover
+
+
+def get_array_gen(dir: str, prefix: str, batch_size: int = None) -> Generator:
+    return gen_arrays(dir, prefix, batch_size)
+
+
+def gen_tensors_as_arrays(dir: str, prefix: str, batch_size: int = None) -> Generator:
+    loader = gen_tensors(dir, prefix, batch_size)
+    for tensor in loader: 
+        yield tensor.numpy()
+
+
+def get_tensor_as_array_gen(dir: str, prefix: str, batch_size: int = None) -> Generator:
+    return gen_tensors_as_arrays(dir, prefix, batch_size)
+
+
+def read_tensors(dir: str, prefix: str) -> Generator:
+    tensor_list = []
+    tensor_loader = gen_tensors(dir, prefix)
+    for tensor in tensor_loader: 
+        tensor_list.append(tensor)
+    return torch.cat(tensor_list)
 
 
 def refresh_directory(dir):
@@ -93,7 +155,7 @@ def init_process(
     fcn(rank, world_size, **kwargs)
 
 
-def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
+def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True) -> int:
 
     # Compile arguments for subprocess.run()
     args = [sys.executable, path]
@@ -107,13 +169,18 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True):
                 args.append(str(v))
 
     # Run script, (optionally) raising an error if encountered
-    result = subprocess.run(args, capture_output=True, text=True)
-    if len(result.stderr) > 0:
+    try:
+        proc = subprocess.run(args, capture_output=True, check=True, text=True)
+        print(proc.stdout)
+        return 0
+    except subprocess.CalledProcessError as err: 
         if raise_error:
-            raise Exception(result.stderr)
-        else:
-            print(f"Error: {result.stderr}")
-    print(result.stdout)
+            raise Exception(err)
+        else: 
+            print(f"returncode = {err.returncode} "
+                  f"stderr = {err.stderr} "
+                  f"stdout = {err.stdout}")
+            return err.returncode
 
 
 def l2_norm(input: Union[torch.Tensor, np.ndarray]) -> float:
@@ -267,8 +334,8 @@ def penalty_fcn_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
 
 def compute_loss(model, dir_cov, split):
     n_vars = model.loads.shape[0]
-    points_loader = read_tensors(dir_cov, 'points')
-    cov_loader = read_tensors(dir_cov, f'cov-{split}')
+    points_loader = gen_tensors(dir_cov, 'points')
+    cov_loader = gen_tensors(dir_cov, f'cov-{split}')
     loss = 0
     for points, cov in zip(points_loader, cov_loader):
         preds = model(points)
@@ -278,6 +345,23 @@ def compute_loss(model, dir_cov, split):
 
 
 # -------------------- SPARSE MATRICES -------------------- #
+
+def reshape_sparse_coo_tensor(
+        tensor: torch.Tensor,
+        new_sz: Sequence[int]
+    ) -> torch.Tensor:
+    tensor = tensor.coalesce()
+    new_idx = ReshapingIndexMap(
+        old_shape=tensor.size(),
+        new_shape=new_sz
+    ).seq_map(tensor.indices().t()).t()
+    return torch.sparse_coo_tensor(
+        indices=new_idx, 
+        values=tensor.values(),
+        size=new_sz
+    )
+
+
         
 def slice_sparse_coo_tensor(
         tensor: torch.Tensor, 
@@ -418,27 +502,49 @@ def create_second_difference_matrix(grid_shape):
 
 
 
-# -------------------- FLATTENING -------------------- #
+# -------------------- DATA PREP -------------------- #
 
 def flatten_dataset(dir_in: str, dir_out: str) -> List[int]:
     """Reads a potentially unflattened dataset from `dir_in`, flattens it, 
     then writes the result to `dir_out`."""
-
-    files = [f for f in os.listdir(dir_in) if f.endswith('.pt')]
+    files = [
+        f for f in os.listdir(dir_in) 
+        if f.startswith('data') and f.endswith('.pt')
+    ]
     for i in range(len(files)):
         path_in = os.path.join(dir_in, files[i])
         data = torch.load(path_in)
         
-        # Get `grid_shape` and `n_vars` from first data file
+        # Get `sz_space` and `n_vars` from first data file
         if i == 0:
-            grid_shape = list(data.shape[1:])
-            n_vars = multiply_list(grid_shape)
+            sz_space = list(data.shape[1:])
+            n_vars = multiply_list(sz_space)
         
         data = data.reshape(len(data), n_vars)
         path_out = os.path.join(dir_out, files[i])
         torch.save(data, path_out)
 
-    return grid_shape
+    return sz_space
+
+
+def batch_data_in_space(dir: str, split: str, batch_size: int) -> None:
+    """Searches `dir` for `split` data files, then re-batches them in space."""
+    n_space = next(gen_tensors(dir, f'data-{split}')).size(1)
+    start = 0
+    i = 0
+    while start < n_space: 
+        sz = min(batch_size, n_space - start)
+
+        batch_list = []
+        for data in gen_tensors(dir, f'data-{split}'): 
+            batch_list.append(data[:, start:(start + sz)])
+        batch = torch.cat(batch_list).t()
+        torch.save(batch, os.path.join(dir, f'data-space-{split}-{i}.pt'))
+
+        start += sz
+        i += 1
+
+
 
 
 
@@ -456,7 +562,14 @@ def gen_cartesian_prod(input: torch.Tensor) -> Generator:
         yield torch.column_stack((input[idx[:,0]], input[idx[:,1]]))
 
 
-def gen_points(grid_shape: List[int], delta: float, batch_size: int) -> Generator:
+def gen_points(
+        grid_shape: List[int],
+        delta: float, 
+        batch_size: int,
+        off_band: bool = True,
+        exclude_upp_tri: bool = True,
+        as_numpy: bool = False
+    ) -> Generator:
     """Yields square matricized training points for a grid_shape-by-grid_shape 
     covariance tensor in batches."""
 
@@ -484,16 +597,25 @@ def gen_points(grid_shape: List[int], delta: float, batch_size: int) -> Generato
                 start_idx = num_leftovers
                 leftovers = None
 
-        keep = cp_batch[:,ndim:(2*ndim)] < cp_batch[:,0:ndim] - bandwidths
-        keep = torch.all(keep, dim=1)
-
-        num_to_keep = keep.sum().item()
+        # Keep only the points on/off the band
+        dists = torch.abs(cp_batch[:,ndim:(2*ndim)] - cp_batch[:,0:ndim])
+        if off_band:
+            keep = torch.any(dists > bandwidths, dim=1)
+        else: 
+            keep = torch.all(dists <= bandwidths, dim=1)
+            
+        # Keep only the points in the lower triangle
+        cp_batch = idx_map.seq_map(cp_batch[keep])  # square matricize indices
+        if exclude_upp_tri:
+            keep = cp_batch[:,0] >= cp_batch[:,1]
+            cp_batch = cp_batch[keep]
+        
+        num_to_keep = cp_batch.size(0)
         if num_to_keep == 0:
             continue
 
         num_to_inc = min(num_to_keep, batch_size - start_idx)
         num_to_exc = max(0, num_to_keep - num_to_inc)
-        cp_batch = idx_map.seq_map(cp_batch[keep])
         batch[start_idx:(start_idx + num_to_inc)] = cp_batch[:num_to_inc]
         start_idx += num_to_inc
         
@@ -504,13 +626,45 @@ def gen_points(grid_shape: List[int], delta: float, batch_size: int) -> Generato
         #  [Last]
         #   (3) cb_batch underfills batch --> start_idx < batch_size
         if start_idx == batch_size:  # if (1) or (2), yield saturated batch
-            yield batch
+            yield batch.numpy() if as_numpy else batch
             start_new_batch = True
             if num_to_exc > 0:
                 leftovers = cp_batch[-num_to_exc:]
     
     if leftovers is not None:  # if (2), yield leftovers
-        yield leftovers
+        yield leftovers.numpy() if as_numpy else leftovers
     elif start_idx < batch_size:  # if (3), yield underfilled batch
-        yield batch[:start_idx]
+        yield batch[:start_idx].numpy() if as_numpy else batch[:start_idx]
+
+
+# TODO: Replace this with calls to Redis or wrap in njit...
+def compute_covariance(
+        points: Union[torch.Tensor, np.ndarray], 
+        dir_data: str, 
+        split: str
+    ) -> Union[torch.Tensor, np.ndarray]:
+
+    # If points is a numpy array, we will return a numpy array
+    as_numpy = False
+    if isinstance(points, np.ndarray):
+        as_numpy = True
+        points = torch.tensor(points)
+
+    n_points = len(points)
+    t1 = torch.zeros(n_points, dtype=torch.float64)
+    t2 = torch.zeros(n_points, dtype=torch.float64)
+    t3 = torch.zeros(n_points, dtype=torch.float64)
+    n = 0
+    data_loader = gen_tensors(dir_data, f'data-{split}')
+    for data in data_loader: 
+
+        n += len(data)
+        for i in range(n_points): 
+            row, col = points[i]
+            t1[i] += torch.sum(data[:,row] * data[:,col])
+            t2[i] += torch.sum(data[:,row])
+            t3[i] += torch.sum(data[:,col])
+
+    cov = (t1 - t2 * t3 / n) / (n - 1)
+    return cov.numpy() if as_numpy else cov
 

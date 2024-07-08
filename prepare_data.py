@@ -8,15 +8,17 @@ from functools import partial
 from typing import Callable, List, Tuple
 
 from config import load_config
-from utils.utils import (
+from utils import (
+    batch_data_in_space,
+    compute_covariance,
     flatten_dataset, 
     gen_points,
     init_process,
     multiply_list, 
-    read_tensors,
+    gen_tensors,
     refresh_directory,
     remove_file,
-    write_rows_to_csv
+    write_rows_to_csv,
 )
 
 
@@ -152,7 +154,7 @@ def allocate_points_lbfgs(
     torch.save(points, path)
 
 
-def compute_covariance(
+def compute_covariance_for_points_file(
         points_file: str,
         dir_cov: str,
         dir_data: str
@@ -165,34 +167,12 @@ def compute_covariance(
     path = os.path.join(dir_cov, points_file)
     points = torch.load(path)
 
-    def _compute_covariance(split: str) -> None: 
-
-        # Compute covariance
-        n_points = len(points)
-        t1 = torch.zeros(n_points, dtype=torch.float64)
-        t2 = torch.zeros(n_points, dtype=torch.float64)
-        t3 = torch.zeros(n_points, dtype=torch.float64)
-        n = 0
-        data_loader = read_tensors(dir_data, f'data-{split}')
-        for data in data_loader: 
-
-            n += len(data)
-            for i in range(n_points): 
-                row, col = points[i]
-                t1[i] += torch.sum(data[:,row] * data[:,col])
-                t2[i] += torch.sum(data[:,row])
-                t3[i] += torch.sum(data[:,col])
-
-        cov = (t1 - t2 * t3 / n) / (n - 1)
-
-        # Save covariances
+    for split in ['full', 'train', 'valid']:
+        cov = compute_covariance(points, dir_data, split)
         cov_file = points_file.replace('points', f'cov-{split}')
         cov_path = os.path.join(dir_cov, cov_file)
         torch.save(cov, cov_path)
 
-    _compute_covariance('full')
-    _compute_covariance('train')
-    _compute_covariance('valid')
 
 
 if __name__ == '__main__':
@@ -281,7 +261,7 @@ if __name__ == '__main__':
     print("Splitting data...")
 
     gen = torch.Generator().manual_seed(args.seed)
-    data_loader = read_tensors(dir_data, 'data')
+    data_loader = gen_tensors(dir_data, 'data-full')
     i = 0
     for data in data_loader: 
         sz = len(data)
@@ -303,7 +283,7 @@ if __name__ == '__main__':
     points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
     pool = mp.Pool(processes=args.world_size_cov)
     results = pool.map(
-        partial(compute_covariance, dir_cov=dir_cov, dir_data=dir_data), 
+        partial(compute_covariance_for_points_file, dir_cov=dir_cov, dir_data=dir_data), 
         points_files
     )
     pool.close()
@@ -332,6 +312,11 @@ if __name__ == '__main__':
                 tensor = torch.cat(tensor_list)
                 path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
                 torch.save(tensor, path)
+
+    
+    # ---------- BATCHING IN SPACE ---------- #
+    for split in ['full', 'train', 'valid']:
+        batch_data_in_space(dir_data, split, 101)  # TODO: parameterize batch size in space
 
     print("DONE!")
             

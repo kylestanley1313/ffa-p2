@@ -7,10 +7,10 @@ from sklearn.decomposition import PCA
 from typing import Generator
 
 from config import load_config
-from utils.utils import (
+from utils import (
     gen_seeds,
     multiply_list,
-    read_tensors,
+    gen_tensors,
     write_rows_to_csv
 )
 
@@ -64,7 +64,6 @@ class PCALoadingInitializer(object):
 
 if __name__ == '__main__':
 
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
@@ -98,9 +97,9 @@ if __name__ == '__main__':
     }
     if args.init_method == 'random':
         n_vars = multiply_list(args.sz_space)
-        loads = torch.randn(args.n_facs, n_vars, generator=gen, dtype=torch.float64)
+        loads = torch.randn(n_vars, args.n_facs, generator=gen, dtype=torch.float64)
     else:
-        dataloader = read_tensors(dir_data, f'data-{args.split}')
+        dataloader = gen_tensors(dir_data, f'data-{args.split}')
         initializer = PCALoadingInitializer(
             pca_svd_solvers[args.init_method], 
             args.n_facs, 

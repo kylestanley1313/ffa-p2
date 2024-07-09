@@ -60,11 +60,11 @@ def estimate_factors_pgls(
 #         get_data_loader: Callable, 
 #         loads: np.ndarray, 
 #         basis: Basis, 
-#         alpha: float
+#         gamma: float
 #     ) -> np.ndarray:
 #     """Perform F-on-S regression using a least squares criterion and a 
 #     roughness penalty:
-#             vec(A) = (B x LLt + D x I * alpha / K)_inv @ vec(L @ X @ B)
+#             vec(A) = (B x LLt + D x I * gamma / K)_inv @ vec(L @ X @ B)
 #             F = A @ E
 #         where E is matrix containing discretized basis elements
 #               B is symmetric matrix of basis element IPs
@@ -89,10 +89,10 @@ def estimate_factors_pgls(
 #             b_mat[i,j] = np.mean(vals_b[i] * vals_b[j])
 #             d_mat[i,j] = np.mean(vals_d[i] * vals_d[j])
 
-#     # Compute (B x LLt + D x I * alpha / K)_inv
+#     # Compute (B x LLt + D x I * gamma / K)_inv
 #     temp1 = np.linalg.inv( 
 #         np.kron(b_mat, loads @ loads.T) + 
-#         np.kron(d_mat, alpha / n_facs * np.eye(n_facs))
+#         np.kron(d_mat, gamma / n_facs * np.eye(n_facs))
 #     )
 
 #     # print(f"d_mat.shape = {d_mat.shape}")
@@ -133,17 +133,17 @@ def estimate_factors_rbels(
         get_data_loader: Callable, 
         loads: np.ndarray, 
         basis: Basis, 
-        alpha: float
+        gamma: float
     ) -> np.ndarray:
     """Perform F-on-S regression using a least squares criterion and a 
     roughness penalty:
-            vec(A) = (B x LLt + D x I * alpha / K)_inv @ vec(L @ X @ B)
+            vec(A) = (H_2 x H_1 + D x I * gamma / K)_inv @ vec(H_3)
             F = A @ E
-        where E is matrix containing discretized basis elements
-              B is symmetric matrix of basis element IPs
+        where H_1 = L @ Lt
+              H_2 = E @ Et
+              H_3 = L @ X @ Et
+              E is matrix containing discretized basis elements
               D is symmetric matrix of second derivative basis element IPs
-              X is matrix of basis coefficients for data
-              x denotes outer product
     """
     n_basis = len(basis)
     n_facs = loads.shape[0]
@@ -168,7 +168,7 @@ def estimate_factors_rbels(
     # Compute basis coefficients for each sample
     temp = np.linalg.inv(
         np.kron(h2_mat, h1_mat) +
-        np.kron(d_mat, alpha / n_facs * np.eye(n_facs))
+        np.kron(d_mat, gamma / n_facs * np.eye(n_facs))
     )
     h3_mat = 0
     start = 0
@@ -189,11 +189,12 @@ def estimate_factors_rbegls(
         loads: np.ndarray, 
         basis: Basis, 
         get_inv_err_cov_loader: Callable, 
-        alpha: float
+        gamma: float
     ) -> np.ndarray:
     """Perform F-on-S regression using a generalized least squares criterion 
     and a roughness penalty:
-            vec(A) = (H_2 x H_1 + D x I * alpha / K)_inv @ vec(H_3)
+            vec(A) = (H_2 x H_1 + D x I * gamma / K)_inv @ vec(H_3)
+            F = A @ E
         where H_1 = L @ B_inv Lt
               H_2 = E @ Et
               H_3 = L @ B_inv @ X @ Et
@@ -231,7 +232,7 @@ def estimate_factors_rbegls(
     # Compute basis coefficients for each sample
     temp = np.linalg.inv(
         np.kron(h2_mat, h1_mat) +
-        np.kron(d_mat, alpha / n_facs * np.eye(n_facs))
+        np.kron(d_mat, gamma / n_facs * np.eye(n_facs))
     )
     h3_mat = 0
     start = 0
@@ -260,18 +261,16 @@ if __name__ == '__main__':
         default=['pls', 'pgls', 'rbels', 'rbegls']
     )
     parser.add_argument('--n_time', type=int)
-    parser.add_argument('--alpha', type=float, default=0)
+    parser.add_argument('--gamma', type=float, default=0)
     parser.add_argument('--split', type=str)
     parser.add_argument('--est_method_loads', type=str)
     parser.add_argument('--regime', type=int, choices=[1, 2, 3])
     parser.add_argument('--batch_size', type=int)
     args = parser.parse_args()
 
-    config = load_config(args.config)
-
     # Validate command-line arguments
-    #   - est_method compatible with alpha
-    #   - "true" flags compatible with --dir_truth
+
+    config = load_config(args.config)
 
     # Set directories/paths
     dir_data = os.path.join(args.dir_out_scratch, 'data')
@@ -338,13 +337,15 @@ if __name__ == '__main__':
 
     if 'rbels' in args.est_methods: 
         print("Estimating via RBELS...")
-        facs = estimate_factors_rbels(get_data_loader, loads, basis, args.alpha)
+        facs = estimate_factors_rbels(get_data_loader, loads, basis, args.gamma)
+        print(f"facs.shape = {facs.shape}")
         path = os.path.join(args.dir_out, f'facs_{args.split}_r{args.regime}_rbels.pt')
         torch.save(torch.tensor(facs), path)
 
     if 'rbegls' in args.est_methods: 
         print("Estimating via RBEGLS...")
-        facs = estimate_factors_rbegls(get_data_loader, loads, basis, get_inv_err_cov_loader, args.alpha)
+        facs = estimate_factors_rbegls(get_data_loader, loads, basis, get_inv_err_cov_loader, args.gamma)
+        print(f"facs.shape = {facs.shape}")
         path = os.path.join(args.dir_out, f'facs_{args.split}_r{args.regime}_rbegls.pt')
         torch.save(torch.tensor(facs), path)
 

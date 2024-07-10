@@ -123,11 +123,11 @@ def estimate_err_cov(
     return evals, evecs  # used to compute low rank symm psd approx to estimated error covariance
 
 
-def invert_err_cov_old(evals, evecs, gamma):
+def invert_err_cov_old(evals, evecs, phi):
     n = evecs.shape[0]
     rk = evecs.shape[1]
     u_mat = evecs @ np.diag(np.sqrt(evals))
-    inv_d_mat = np.eye(n) / gamma
+    inv_d_mat = np.eye(n) / phi
     inv_est_err_cov = (
         inv_d_mat - 
         inv_d_mat @ u_mat @ np.linalg.inv(np.eye(rk) + u_mat.T @ inv_d_mat @ u_mat) @ u_mat.T @ inv_d_mat
@@ -138,10 +138,10 @@ def invert_err_cov_old(evals, evecs, gamma):
 def invert_err_cov(
         evals: np.ndarray, 
         evecs: np.ndarray, 
-        gamma: float, 
+        phi: float, 
         batch_size: int
     ) -> Generator:
-    """Inverts UUt + D where U = evecs @ diag(sqrt(evals)) and D = gamma*I
+    """Inverts UUt + D where U = evecs @ diag(sqrt(evals)) and D = phi*I
     via a specialized Woodbury identity:  
         (UUt + D) = D_inv - D_inv @ U @ A_inv @ Ut @ D_inv
     where A = I - Ut @ D_inv @ U. Yields solution in batches.
@@ -152,7 +152,7 @@ def invert_err_cov(
     u_mat = evecs @ np.diag(np.sqrt(evals))
 
     # Compute inverse of A in memory-efficient manner
-    a_mat = np.eye(rk, dtype=np.float64) +  (u_mat.T @ u_mat) / gamma
+    a_mat = np.eye(rk, dtype=np.float64) +  (u_mat.T @ u_mat) / phi
     a_mat_inv = scipy.linalg.inv(a_mat)
 
     # Yield inverse in row-wise batches
@@ -161,11 +161,11 @@ def invert_err_cov(
         sz = min(batch_size, n_vars - start)
         d_inv_mat_ = np.hstack((  # sz rows of d_inv_mat
             np.zeros((sz, start), dtype=np.float64),
-            np.eye(sz, dtype=np.float64) / gamma,
+            np.eye(sz, dtype=np.float64) / phi,
             np.zeros((sz, n_vars - start - sz), dtype=np.float64)
         ))
         u_mat_ = u_mat[start:(start + sz)]  # sz rows of u_mat
-        yield d_inv_mat_ - (u_mat_ @ a_mat_inv @ u_mat.T) / (gamma ** 2)
+        yield d_inv_mat_ - (u_mat_ @ a_mat_inv @ u_mat.T) / (phi ** 2)
         start += sz
 
 
@@ -184,7 +184,7 @@ if __name__ == '__main__':
     parser.add_argument('--delta_true', type=float)
     parser.add_argument('--delta_est', type=float)
     parser.add_argument('--eval_cutoff', type=float)
-    parser.add_argument('--gamma', type=float)
+    parser.add_argument('--phi', type=float)
     parser.add_argument('--batch_size', type=int)
     args = parser.parse_args()
 
@@ -244,7 +244,7 @@ if __name__ == '__main__':
         # Invert low-rank error covariance via Woodbury
         inv_err_cov_loader = invert_err_cov(
             evals, evecs, 
-            gamma=args.gamma, 
+            phi=args.phi, 
             batch_size=args.batch_size
         )
         for i, rows in enumerate(inv_err_cov_loader):
@@ -296,7 +296,7 @@ if __name__ == '__main__':
         # Invert low-rank error covariance via Woodbury
         inv_err_cov_loader = invert_err_cov(
             evals, evecs, 
-            gamma=args.gamma, 
+            phi=args.phi, 
             batch_size=args.batch_size
         )
 

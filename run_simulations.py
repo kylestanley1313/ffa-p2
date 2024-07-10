@@ -97,7 +97,10 @@ if __name__ == '__main__':
                 'world_size_est': rep['world_size_est'],
                 'world_size_cov': rep['world_size_cov'],
                 'delta': rep['delta_est'],
-                'prop_train': rep['prop_train'],
+                'prop_train_time': 0.8,
+                'prop_train_space': 0.8,
+                'bsz_time': 50,
+                'bsz_space': 100,
                 'seed': rep['seed'],
             }
             if args.benchmark: 

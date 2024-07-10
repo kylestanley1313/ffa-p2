@@ -192,7 +192,10 @@ if __name__ == '__main__':
         help="Number of workers used in this script's covariance computation."
     )
     parser.add_argument('--delta', type=float)
-    parser.add_argument('--prop_train', type=float, default=0.8)
+    parser.add_argument('--prop_train_time', type=float, default=0.8)
+    parser.add_argument('--prop_train_space', type=float, default=0.8)
+    parser.add_argument('--bsz_time', type=int)
+    parser.add_argument('--bsz_space', type=int)
     parser.add_argument('--benchmark', action='store_true')
     parser.add_argument('--refresh_dirs', action='store_true')
     parser.add_argument('--seed', type=int, default=12345)
@@ -215,8 +218,13 @@ if __name__ == '__main__':
         if args.benchmark:
             refresh_directory(dir_bench)
 
-    # Flatten dataset, getting `sz_space` and `n_vars` along the way
-    sz_space = flatten_dataset(args.dir_dataset, dir_data)
+    # Flatten dataset, getting `n_time` and `sz_space` along the way
+    n_time, sz_space = flatten_dataset(
+        args.dir_dataset, dir_data, 
+        args.bsz_time, args.bsz_space
+    )
+    n_vars = multiply_list(sz_space)
+
 
     # Multiprocessing configurations
     mp.set_start_method('spawn')
@@ -258,22 +266,56 @@ if __name__ == '__main__':
 
 
     # ---------- DATA SPLITTING ---------- #
-    print("Splitting data...")
-
     gen = torch.Generator().manual_seed(args.seed)
-    data_loader = gen_tensors(dir_data, 'data-full')
+
+    # NOTE: Loading and error covariance estimation is made easy by splitting 
+    # data directly. Factor estimation is made easy by indirectly splitting the
+    # data via the flattened spatial indices. 
+        
+    print("Splitting data on time...")
+    data_loader = gen_tensors(dir_data, 'data-time-full')
     i = 0
     for data in data_loader: 
         sz = len(data)
-        n_train = int(args.prop_train * sz)
+        n_train = int(args.prop_train_time * sz)
         idx = torch.randperm(sz, generator=gen)
         data_train = data[idx[:n_train]]
         data_valid = data[idx[n_train:]]
-        path_train = os.path.join(dir_data, f'data-train-{i}.pt')
-        path_valid = os.path.join(dir_data, f'data-valid-{i}.pt')
+        path_train = os.path.join(dir_data, f'data-time-train-{i}.pt')
+        path_valid = os.path.join(dir_data, f'data-time-valid-{i}.pt')
         torch.save(data_train, path_train)
         torch.save(data_valid, path_valid)
         i += 1
+
+    print("Splitting indices on space...")
+    idx = torch.randperm(n_vars, generator=gen)
+    n_train = int(args.prop_train_space * n_vars)
+    path_train = os.path.join(dir_data, f'idx-space-train.pt')
+    path_valid = os.path.join(dir_data, f'idx-space-valid.pt')
+    torch.save(idx[:n_train].sort().values, path_train)
+    torch.save(idx[n_train:].sort().values, path_valid)
+
+    # data_loader = gen_tensors(dir_data, 'data-space-full')
+    # start = 0
+    # i = 0
+    # for data in data_loader: 
+    #     sz = len(data)
+    #     n_train = int(args.prop_train_space * sz)
+    #     idx = torch.randperm(sz, generator=gen)
+    #     idx_train = idx[:n_train].sort().values
+    #     idx_valid = idx[n_train:].sort().values
+    #     data_train = data[idx_train]
+    #     data_valid = data[idx_valid]
+    #     path_data_train = os.path.join(dir_data, f'data-space-train-{i}.pt')
+    #     path_data_valid = os.path.join(dir_data, f'data-space-valid-{i}.pt')
+    #     path_idx_train = os.path.join(dir_data, f'idx-space-train-{i}.pt')
+    #     path_idx_valid = os.path.join(dir_data, f'idx-space-valid-{i}.pt')
+    #     torch.save(data_train, path_data_train)
+    #     torch.save(data_valid, path_data_valid)
+    #     torch.save(start + idx_train, path_idx_train)
+    #     torch.save(start + idx_valid, path_idx_valid)
+    #     i += 1
+    #     start += sz
         
 
     # ---------- COVARIANCE COMPUTATION ---------- #
@@ -313,10 +355,4 @@ if __name__ == '__main__':
                 path = os.path.join(dir_cov, f'{file_type}-{rank}.pt')
                 torch.save(tensor, path)
 
-    
-    # ---------- BATCHING IN SPACE ---------- #
-    for split in ['full', 'train', 'valid']:
-        batch_data_in_space(dir_data, split, 101)  # TODO: parameterize batch size in space
-
-    print("DONE!")
             

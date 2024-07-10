@@ -1327,7 +1327,7 @@ if __name__ == '__main__':
         gen=gen
     )
     norm_global, norm_local = next(dataloader)
-    write_generated_tensor(dataloader, args.dir_dataset, 'data-full')
+    write_generated_tensor(dataloader, args.dir_dataset, 'data')
 
     # Write (properly scaled) tensors
     # NOTE: (Loading and error scaling)

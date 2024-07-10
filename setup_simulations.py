@@ -74,6 +74,7 @@ if __name__ == '__main__':
                 os.makedirs(rep['dir_out_scratch'])
             os.makedirs(os.path.join(rep['dir_out'], 'data'))
             os.makedirs(os.path.join(rep['dir_out'], 'cov'))
+            os.makedirs(os.path.join(rep['dir_out'], 'err-cov'))
             for p in ['lbfgs', 'dsgd', 'dssgd']: 
                 os.makedirs(os.path.join(rep['dir_out_scratch'], f'cov-{p}'))
             if args.benchmark: 

@@ -13,6 +13,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--design', type=str)
     parser.add_argument('--benchmark', action='store_true')
+    parser.add_argument('--fse', action='store_true')
     args = parser.parse_args()
 
     # Load config and design
@@ -65,18 +66,16 @@ if __name__ == '__main__':
                 config.scratch_root, 'out', 
                 args.design, f'sim-{sim_cnt}', f'rep-{r}'
             )
-            # refresh_directory(rep['dir_dataset'])
-            # refresh_directory(rep['dir_out'])
-            # refresh_directory(rep['dir_out_scratch'])
             os.makedirs(rep['dir_dataset'])
             os.makedirs(rep['dir_out'])
             if not os.path.exists(rep['dir_out_scratch']):
                 os.makedirs(rep['dir_out_scratch'])
             os.makedirs(os.path.join(rep['dir_out'], 'data'))
             os.makedirs(os.path.join(rep['dir_out'], 'cov'))
-            os.makedirs(os.path.join(rep['dir_out'], 'err-cov'))
-            for p in ['lbfgs', 'dsgd', 'dssgd']: 
-                os.makedirs(os.path.join(rep['dir_out_scratch'], f'cov-{p}'))
+            if args.fse:
+                os.makedirs(os.path.join(rep['dir_out'], 'err-cov'))
+            for m in ['lbfgs', 'dsgd', 'dssgd']: 
+                os.makedirs(os.path.join(rep['dir_out_scratch'], f'cov-{m}'))
             if args.benchmark: 
                 os.makedirs(os.path.join(rep['dir_out'], 'bench'))
             os.makedirs(os.path.join(rep['dir_out'], 'results'))

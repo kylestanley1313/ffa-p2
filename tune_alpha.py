@@ -13,7 +13,7 @@ from utils import (
 from utils.model import LowRankCovariance
 
 
-ALPHAS = [0, 0.001, 0.01, 0.1, 1] # , 100, 1000, 10000]
+ALPHAS = [0, 0.001, 0.01, 0.1, 1]
 
 
 if __name__ == '__main__':
@@ -42,7 +42,7 @@ if __name__ == '__main__':
     if args.est_method == 'dsgd':
         assert args.world_size is not None, "Must pass world size!"
         assert args.batch_size is not None, "Must pass batch size!"
-        assert args.seed is not None, "Msut pass seed!"
+        assert args.seed is not None, "Must pass seed!"
 
     config = load_config(args.config)
 

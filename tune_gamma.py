@@ -31,8 +31,6 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int)
     args = parser.parse_args()
 
-    # Validate command-line arguments
-
     config = load_config(args.config)
 
     # Directory/path preparation
@@ -46,7 +44,7 @@ if __name__ == '__main__':
         path = os.path.join(args.dir_truth, 'loads.pt')
         loads = torch.load(path).numpy()
     else: 
-        path = os.path.join(args.dir_out, f'model-{args.est_method_loads}-train.pth')
+        path = os.path.join(args.dir_out, f'model-{args.est_method_loads}-full.pth')
         loads = torch.load(path)['loads'].numpy()
 
     # Get validation indices

@@ -300,11 +300,3 @@ if __name__ == '__main__':
 
     # TODO: Address erratic behavior near boundary for saturated basis when
     # gamma is zero. 
-        
-    from utils.plotting import plot_n_arrays
-
-    path = os.path.join(args.dir_truth, 'facs.pt')
-    facs_ = torch.load(path).numpy().T
-    plot_n_arrays([facs_[0], facs[0]])
-    plot_n_arrays([facs_[1], facs[1]])
-

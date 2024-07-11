@@ -8,7 +8,7 @@ import sys
 import torch
 import torch.distributed as dist
 import yaml
-from typing import Callable, Dict, Generator, List, Sequence, Union
+from typing import Callable, Dict, Generator, List, Sequence, Tuple, Union
 
 from utils.model import LowRankCovariance
 
@@ -32,6 +32,18 @@ def gen_seeds(gen, size):
         return seeds.tolist()[0]
     else: 
         return seeds.tolist()
+    
+
+def gen_range(n, batch_size, as_numpy=False):
+    start = 0
+    while start < n:
+        sz = min(batch_size, n - start)
+        idx = torch.arange(sz) + start
+        if as_numpy: 
+            yield idx.numpy()
+        else: 
+            yield idx
+        start += sz
     
 
 def write_generated_tensor(tensor_loader: Generator, dir: str, prefix: str):
@@ -82,21 +94,17 @@ def gen_arrays(dir: str, prefix: str, batch_size: int = None) -> Generator:
             yield leftover
 
 
-def get_array_gen(dir: str, prefix: str, batch_size: int = None) -> Generator:
-    return gen_arrays(dir, prefix, batch_size)
-
-
 def gen_tensors_as_arrays(dir: str, prefix: str, batch_size: int = None) -> Generator:
     loader = gen_tensors(dir, prefix, batch_size)
     for tensor in loader: 
         yield tensor.numpy()
 
 
-def get_tensor_as_array_gen(dir: str, prefix: str, batch_size: int = None) -> Generator:
-    return gen_tensors_as_arrays(dir, prefix, batch_size)
+def get_generator(gen_fcn: Callable, *args, **kwargs) -> Generator:
+    return gen_fcn(*args, **kwargs)
 
 
-def read_tensors(dir: str, prefix: str) -> Generator:
+def read_tensors(dir: str, prefix: str) -> torch.Tensor:
     tensor_list = []
     tensor_loader = gen_tensors(dir, prefix)
     for tensor in tensor_loader: 
@@ -174,12 +182,12 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True) -
         print(proc.stdout)
         return 0
     except subprocess.CalledProcessError as err: 
+        print(f"returncode = {err.returncode} "
+              f"stderr = {err.stderr} "
+              f"stdout = {err.stdout}")
         if raise_error:
             raise Exception(err)
         else: 
-            print(f"returncode = {err.returncode} "
-                  f"stderr = {err.stderr} "
-                  f"stdout = {err.stdout}")
             return err.returncode
 
 
@@ -315,6 +323,22 @@ class ReshapingIndexMap(object):
             return out
         
 
+def procrustes_rotation(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Supposing `input` and `target` are both K-by-T matrices, finds the 
+    K-by-K rotation matrix `rot_mat` such that `rot_mat @ input` is close to 
+    `target`."""
+    
+    # Compute the cross-covariance matrix
+    cov = target @ input.T
+    
+    # Perform SVD on the cross-covariance matrix
+    U, _, Vt = torch.linalg.svd(cov)
+    
+    # Compute the rotation matrix
+    rot_mat = U @ Vt
+    
+    return rot_mat
+
 
 # -------------------- OBJECTIVE FUNCTIONS -------------------- #
 
@@ -360,7 +384,6 @@ def reshape_sparse_coo_tensor(
         values=tensor.values(),
         size=new_sz
     )
-
 
         
 def slice_sparse_coo_tensor(
@@ -504,15 +527,86 @@ def create_second_difference_matrix(grid_shape):
 
 # -------------------- DATA PREP -------------------- #
 
-def flatten_dataset(dir_in: str, dir_out: str) -> List[int]:
-    """Reads a potentially unflattened dataset from `dir_in`, flattens it, 
-    then writes the result to `dir_out`."""
-    files = [
-        f for f in os.listdir(dir_in) 
-        if f.startswith('data') and f.endswith('.pt')
-    ]
+# def flatten_dataset(dir_in: str, dir_out: str) -> List[int]:
+#     """Reads a potentially unflattened dataset from `dir_in`, flattens it, 
+#     then writes the result to `dir_out`."""
+#     files = [
+#         f for f in os.listdir(dir_in) 
+#         if f.startswith('data') and f.endswith('.pt')
+#     ]
+#     for i in range(len(files)):
+#         path_in = os.path.join(dir_in, files[i])
+#         data = torch.load(path_in)
+        
+#         # Get `sz_space` and `n_vars` from first data file
+#         if i == 0:
+#             sz_space = list(data.shape[1:])
+#             n_vars = multiply_list(sz_space)
+        
+#         data = data.reshape(len(data), n_vars)
+#         path_out = os.path.join(dir_out, files[i])
+#         torch.save(data, path_out)
+
+#     return sz_space
+
+
+def flatten_dataset(
+        dir_dataset: str, 
+        dir_out: str, 
+        bsz_time: int, 
+        bsz_space: int
+    ) -> Tuple[int, List[int]]: 
+    """Creates two flat views (batched by row) of the dataset represented by
+    tensors of shape (T, M_1, ..., M_D) in `dir_dataset`: 
+        (1) A dataset with shape (T, M_1*...*M_D)
+        (2) A dataset with shape (M_1*...*M_D, T)
+    Finally, returns `n_time` and `sz_space`.
+    """
+
+    # Create the first flat view (temporal rows)
+    i = 0
+    n_time = 0
+    for data in gen_tensors(dir_dataset, 'data', bsz_time):
+
+        if i == 0: 
+            sz_space = list(data.shape[1:])
+            n_space = multiply_list(sz_space)
+
+        sz = len(data)
+        data = data.reshape(sz, n_space)
+        path = os.path.join(dir_out, f'data-time-full-{i}.pt')
+        torch.save(data, path)
+
+        i += 1
+        n_time += sz
+
+    # Create the second flat view (spatial rows)
+    i = 0
+    start = 0
+    while start < n_space:
+
+        sz = min(bsz_space, n_space - start)
+        batches = []
+
+        for batch in gen_tensors(dir_out, 'data-time-full', bsz_time):
+            batches.append(batch[:, start:(start + sz)])
+        data = torch.cat(batches).t()
+
+        path = os.path.join(dir_out, f'data-space-full-{i}.pt')
+        torch.save(data, path)
+
+        i += 1
+        start += sz
+
+    return n_time, sz_space
+
+    
+
+
+
+
     for i in range(len(files)):
-        path_in = os.path.join(dir_in, files[i])
+        path_in = os.path.join(dir_dataset, files[i])
         data = torch.load(path_in)
         
         # Get `sz_space` and `n_vars` from first data file
@@ -524,7 +618,7 @@ def flatten_dataset(dir_in: str, dir_out: str) -> List[int]:
         path_out = os.path.join(dir_out, files[i])
         torch.save(data, path_out)
 
-    return sz_space
+
 
 
 def batch_data_in_space(dir: str, split: str, batch_size: int) -> None:
@@ -655,7 +749,7 @@ def compute_covariance(
     t2 = torch.zeros(n_points, dtype=torch.float64)
     t3 = torch.zeros(n_points, dtype=torch.float64)
     n = 0
-    data_loader = gen_tensors(dir_data, f'data-{split}')
+    data_loader = gen_tensors(dir_data, f'data-time-{split}')
     for data in data_loader: 
 
         n += len(data)

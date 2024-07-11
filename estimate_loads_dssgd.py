@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -22,6 +23,7 @@ from utils import (
     loss_fcn,
     multiply_list,
     remove_file,
+    write_rows_to_csv,
 )
 from utils.model import LowRankCovariance
     
@@ -165,23 +167,9 @@ def train(
 
     # Set directories
     dir_cov = os.path.join(dir_out_scratch, 'cov-dssgd')
-    dir_bench = os.path.join(dir_out, 'bench')
+    path_model = os.path.join(dir_out, f'model-dssgd-{split}.pth')
 
-    # Get benchmarking wrappers
-    process_epoch_ = time_dist_fcn(
-        fcn=process_epoch,
-        dir=dir_bench,
-        prefix='process_epoch',
-        benchmark=benchmark
-    )
-    Dataset_ = size_dist_obj(
-        init=DistributedStratifiedCovarianceDataset,
-        dir=dir_bench,
-        prefix='dataset',
-        benchmark=benchmark
-    )
-
-    dataset = Dataset_(dir_cov, split, rank, world_size)
+    dataset = DistributedStratifiedCovarianceDataset(dir_cov, split, rank, world_size)
     batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
     dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
 
@@ -192,42 +180,48 @@ def train(
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
     loss_fcn_ = partial(loss_fcn, n_vars=n_vars)
-
-    path_model = os.path.join(dir_out, f'model-dssgd-{split}.pth')
-    last_loss = float('inf')
+    
+    last_objective = float('inf')
     epochs_waited = 0
     early_stop = torch.tensor(False)
     diverged = torch.tensor(False)
     # prev_train_loss = float('inf')
     # lr = torch.tensor(lr)
+    if benchmark:
+        bench_rows = []
     for epoch in range(max_epochs):
-        process_epoch_(
+
+        if benchmark:
+            dist.barrier()
+            start = time.time()
+
+        process_epoch(
             model, dataloader, loss_fcn_, optimizer, 
             gen, n_strata, rank, world_size
         )
-        loss = compute_objective(
+        objective = compute_objective(
             model, dataloader, loss_fcn_, 
             rank, world_size
         )
         
         # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
-            print(f"epoch = {epoch + 1} | loss = {loss}")
+            print(f"epoch = {epoch + 1} | objective = {objective}")
 
             # Handle divergence
-            if torch.isnan(loss) or torch.isinf(loss):
+            if torch.isnan(objective) or torch.isinf(objective):
                 diverged = torch.tensor(True)
 
             else: 
                 # Handle early stopping
-                if abs(loss - last_loss) > tol:
+                if abs(objective - last_objective) > tol:
                     epochs_waited = 0
                 else:
                     epochs_waited += 1
                     if epochs_waited >= patience: 
                         print(f"Early stopping after {epoch + 1} epochs.")
                         early_stop = torch.tensor(True)
-                last_loss = loss
+                last_objective = objective
 
             # Update learning rate via bold driver
             # lr *= 1.05 if train_loss < prev_train_loss else 0.5
@@ -236,25 +230,53 @@ def train(
         dist.barrier()
         dist.broadcast(diverged, 0)
         dist.broadcast(early_stop, 0)
+
+        if benchmark: 
+
+            # Compute epoch time
+            dist.barrier()
+            epoch_time = time.time() - start
+
+            # Aggregate times then choose maximum
+            if rank > 0: 
+                dist.send(torch.tensor(epoch_time, dtype=torch.float64), 0)
+            else: 
+                max_epoch_time = epoch_time
+                for r in range(1, world_size):
+                    worker_epoch_time = torch.zeros(1, dtype=torch.float64)
+                    dist.recv(worker_epoch_time, r)
+                    max_epoch_time = max(max_epoch_time, worker_epoch_time.item())
+                bench_rows.append({
+                    'epoch': epoch + 1,
+                    'objective': objective.item(),
+                    'time': max_epoch_time
+                })  
+
         if diverged or early_stop:
             break
         # dist.broadcast(lr, 0)
         # optimizer.param_groups[0]['lr'] = lr.item()
 
-    # TODO: Consider using exit codes to handle divergence/no-convergence/etc. at script level
+    # Emit exit code and/or save model
     if rank == 0:
+
+        if benchmark:
+            path_bench = os.path.join(dir_out, 'bench', 'epochs-dssgd.csv')
+            write_rows_to_csv(path_bench, bench_rows)
 
         if diverged: 
             print(f"Error: Divergence after {epoch + 1} epochs.")
             sys.exit(CODE_DIVERGENCE)
 
         else: 
+
+            # Save model (even if no convergence)
+            torch.save(model.state_dict(), path_model)
+
             if not early_stop:
                 print(f"Warning: No convergence after {epoch + 1} epochs.")
                 sys.exit(CODE_NO_CONVERGENCE)
             
-            # Save model (even if no convergence)
-            torch.save(model.state_dict(), path_model)
 
     dist.destroy_process_group()
 

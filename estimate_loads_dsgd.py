@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -26,6 +27,7 @@ from utils import (
     multiply_list,
     penalty_fcn,
     remove_file,
+    write_rows_to_csv,
 )
 
 
@@ -102,26 +104,11 @@ def train(
     torch.set_num_threads(1)
     gen = torch.Generator().manual_seed(seed)
     
-    # Set directories
+    # Set paths
     dir_cov = os.path.join(dir_out_scratch, 'cov-dsgd')
-    dir_bench = os.path.join(dir_out, 'bench')
     path_model = os.path.join(dir_out, f'model-dsgd-{split}.pth')
 
-    # Get benchmarking wrappers
-    process_epoch_ = time_dist_fcn(
-        fcn=process_epoch,
-        dir=dir_bench,
-        prefix='process_epoch',
-        benchmark=benchmark
-    )
-    Dataset_ = size_dist_obj(
-        init=DistributedCovarianceDataset,
-        dir=dir_bench,
-        prefix='dataset',
-        benchmark=benchmark
-    )
-
-    dataset = Dataset_(dir_cov, split, rank, world_size)
+    dataset = DistributedCovarianceDataset(dir_cov, split, rank, world_size)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
@@ -141,8 +128,15 @@ def train(
     diverged = torch.tensor(False)
     # prev_train_loss = float('inf')
     # lr = torch.tensor(lr)
+    if benchmark:
+        bench_rows = []
     for epoch in range(max_epochs):
-        process_epoch_(
+
+        if benchmark:
+            dist.barrier()
+            start = time.time()
+
+        process_epoch(
             model, dataloader, 
             loss_fcn_, penalty_fcn_, 
             optimizer
@@ -181,27 +175,55 @@ def train(
         dist.barrier()
         dist.broadcast(diverged, 0)
         dist.broadcast(early_stop, 0)
+
+        if benchmark: 
+
+            # Compute epoch time
+            dist.barrier()
+            epoch_time = time.time() - start
+
+            # Aggregate times then choose maximum
+            if rank > 0: 
+                dist.send(torch.tensor(epoch_time, dtype=torch.float64), 0)
+            else: 
+                max_epoch_time = epoch_time
+                for r in range(1, world_size):
+                    worker_epoch_time = torch.zeros(1, dtype=torch.float64)
+                    dist.recv(worker_epoch_time, r)
+                    max_epoch_time = max(max_epoch_time, worker_epoch_time.item())
+                bench_rows.append({
+                    'epoch': epoch + 1,
+                    'objective': objective.item(),
+                    'time': max_epoch_time
+                }) 
+
         if diverged or early_stop:
             break
         # dist.broadcast(lr, 0)
         # optimizer.param_groups[0]['lr'] = lr.item()
 
-    # TODO: Consider using exit codes to handle divergence/no-convergence/etc. at script level
+    # Emit exit code and/or save model
     if rank == 0:
+
+        if benchmark:
+            path_bench = os.path.join(dir_out, 'bench', 'epochs-dsgd.csv')
+            write_rows_to_csv(path_bench, bench_rows)
 
         if diverged: 
             print(f"Error: Divergence after {epoch + 1} epochs.")
             sys.exit(CODE_DIVERGENCE)
 
         else: 
-            if not early_stop:
-                print(f"Warning: No convergence after {epoch + 1} epochs.")
-                sys.exit(CODE_NO_CONVERGENCE)
-            
+
             # Save model (even if no convergence)
             state_dict = model.state_dict()
             state_dict['loads'] = state_dict.pop('module.loads')  # replace DDP key
             torch.save(state_dict, path_model)
+    
+            if not early_stop:
+                print(f"Warning: No convergence after {epoch + 1} epochs.")
+                sys.exit(CODE_NO_CONVERGENCE)
+            
 
     dist.destroy_process_group()
 

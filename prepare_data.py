@@ -2,14 +2,12 @@ import argparse
 import os
 import time
 import torch
-import torch.distributed as dist
 import torch.multiprocessing as mp
 from functools import partial
-from typing import Callable, List, Tuple
+from typing import List, Tuple
 
 from config import load_config
 from utils import (
-    batch_data_in_space,
     compute_covariance,
     flatten_dataset, 
     gen_points,
@@ -196,6 +194,7 @@ if __name__ == '__main__':
     parser.add_argument('--prop_train_space', type=float, default=0.8)
     parser.add_argument('--bsz_time', type=int)
     parser.add_argument('--bsz_space', type=int)
+    parser.add_argument('--fse', action='store_true')
     parser.add_argument('--benchmark', action='store_true')
     parser.add_argument('--refresh_dirs', action='store_true')
     parser.add_argument('--seed', type=int, default=12345)
@@ -287,35 +286,14 @@ if __name__ == '__main__':
         torch.save(data_valid, path_valid)
         i += 1
 
-    print("Splitting indices on space...")
-    idx = torch.randperm(n_vars, generator=gen)
-    n_train = int(args.prop_train_space * n_vars)
-    path_train = os.path.join(dir_data, f'idx-space-train.pt')
-    path_valid = os.path.join(dir_data, f'idx-space-valid.pt')
-    torch.save(idx[:n_train].sort().values, path_train)
-    torch.save(idx[n_train:].sort().values, path_valid)
-
-    # data_loader = gen_tensors(dir_data, 'data-space-full')
-    # start = 0
-    # i = 0
-    # for data in data_loader: 
-    #     sz = len(data)
-    #     n_train = int(args.prop_train_space * sz)
-    #     idx = torch.randperm(sz, generator=gen)
-    #     idx_train = idx[:n_train].sort().values
-    #     idx_valid = idx[n_train:].sort().values
-    #     data_train = data[idx_train]
-    #     data_valid = data[idx_valid]
-    #     path_data_train = os.path.join(dir_data, f'data-space-train-{i}.pt')
-    #     path_data_valid = os.path.join(dir_data, f'data-space-valid-{i}.pt')
-    #     path_idx_train = os.path.join(dir_data, f'idx-space-train-{i}.pt')
-    #     path_idx_valid = os.path.join(dir_data, f'idx-space-valid-{i}.pt')
-    #     torch.save(data_train, path_data_train)
-    #     torch.save(data_valid, path_data_valid)
-    #     torch.save(start + idx_train, path_idx_train)
-    #     torch.save(start + idx_valid, path_idx_valid)
-    #     i += 1
-    #     start += sz
+    if args.fse:
+        print("Splitting indices on space...")
+        idx = torch.randperm(n_vars, generator=gen)
+        n_train = int(args.prop_train_space * n_vars)
+        path_train = os.path.join(dir_data, f'idx-space-train.pt')
+        path_valid = os.path.join(dir_data, f'idx-space-valid.pt')
+        torch.save(idx[:n_train].sort().values, path_train)
+        torch.save(idx[n_train:].sort().values, path_valid)
         
 
     # ---------- COVARIANCE COMPUTATION ---------- #

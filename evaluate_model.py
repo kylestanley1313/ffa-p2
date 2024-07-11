@@ -65,7 +65,7 @@ if __name__ == '__main__':
     parser.add_argument('--designs', type=str, nargs='+')
     parser.add_argument(
         '--sim_type', type=str, required=True,
-        choices=['load_err', 'load_time', 'fac']
+        choices=['load_err', 'load_bench', 'fac']
     )
     parser.add_argument(
         '--le_methods', type=str, nargs='+',
@@ -171,7 +171,31 @@ if __name__ == '__main__':
         print(df_agg)
 
 
-    if args.sim_type.startswith('fac'):
+    if args.sim_type == 'load_bench':
+
+        df_list = []
+        for des_id, design in designs.items():
+            for sim_id in design['sim_ids']:
+                dir_sim = os.path.join(config.root, 'designs', des_id, sim_id)
+
+                for r in range(design['n_reps']):
+                    rep = load_yaml(os.path.join(dir_sim, f'rep-{r}.yml'))
+
+                    for method in args.le_methods: 
+                        path = os.path.join(rep['dir_out'], 'bench', f'epochs-{method}.csv')
+                        df = pd.read_csv(path)
+                        df['des_id'] = des_id
+                        df['sim_id'] = sim_id
+                        df['rep_id'] = r
+                        df['est_method'] = method
+                        df['world_size'] = rep['world_size_est']
+                        df['n_vars'] = multiply_list(rep['sz_space'])
+                        df_list.append(df)
+        df = pd.concat(df_list)
+        print(df.shape)
+
+
+    if args.sim_type == 'fac':
 
         # Build dataframe of simulation results from all designs
         columns = [
@@ -206,7 +230,9 @@ if __name__ == '__main__':
                             est_facs = torch.load(path)
                             
                             if regime == 3: 
-                                # Rotate estimated factors towards true factors
+                                # Rotate estimated factors towards true factors.
+                                # This is required since regime 3 uses 
+                                # estimated, not true, loadings. 
                                 rot_mat = procrustes_rotation(est_facs, facs)
                                 est_facs = rot_mat @ est_facs
 

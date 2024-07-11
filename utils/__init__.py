@@ -123,10 +123,18 @@ def remove_file(path):
         os.remove(path)
 
 
-def write_rows_to_csv(path, rows):
-    mode = 'a' if os.path.exists(path) else 'w'
-    with open(path, mode, newline='') as file:
-        writer = csv.writer(file)
+def write_rows_to_csv(path: str, rows: List[Dict]) -> None:
+    
+    if not rows:
+        raise ValueError("The list of rows is empty.")
+
+    header = rows[0].keys()
+    file_exists = os.path.isfile(path)
+
+    with open(path, mode='a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=header)
+        if not file_exists:
+            writer.writeheader()
         writer.writerows(rows)
 
 

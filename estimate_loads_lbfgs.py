@@ -1,6 +1,7 @@
 import argparse
 import os
 import sys
+import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -21,6 +22,7 @@ from utils import (
     multiply_list,
     penalty_fcn,
     remove_file,
+    write_rows_to_csv,
 )
 
 
@@ -60,7 +62,8 @@ def train(
         history_size, 
         tol, 
         patience, 
-        max_epochs
+        max_epochs,
+        benchmark
     ): 
 
     # Set directories and paths
@@ -85,7 +88,13 @@ def train(
     epochs_waited = 0
     early_stop = torch.tensor(False)
     diverged = torch.tensor(False)
+    if benchmark: 
+        bench_rows = []
     for epoch in range(max_epochs):
+
+        if benchmark: 
+            start = time.time()
+
         process_epoch(
             model, dataset, 
             loss_fcn_, penalty_fcn_, 
@@ -113,9 +122,20 @@ def train(
                     early_stop = torch.tensor(True)
             last_objective = objective
 
+        if benchmark:
+            epoch_time = time.time() - start
+            bench_rows.append({
+                'epoch': epoch + 1,
+                'objective': objective.item(),
+                'time': epoch_time
+            })
+
         if diverged or early_stop:
             break
 
+    if benchmark:
+        path_bench = os.path.join(dir_out, 'bench', 'epochs-lbfgs.csv')
+        write_rows_to_csv(path_bench, bench_rows)
 
     if diverged: 
         print(f"Error: Divergence after {epoch + 1} epochs.")
@@ -147,7 +167,7 @@ if __name__ == '__main__':
     parser.add_argument('--tol', type=float)
     parser.add_argument('--patience', type=int)
     parser.add_argument('--max_epochs', type=int, default=100)
-    parser.add_argument('--fail_no_convergence', action='store_true')
+    parser.add_argument('--benchmark', action='store_true')
     args = parser.parse_args()
     
     config = load_config(args.config)
@@ -155,10 +175,8 @@ if __name__ == '__main__':
     # Set directories and paths
     dir_data = os.path.join(args.dir_out_scratch, 'data')
     dir_cov = os.path.join(args.dir_out_scratch, 'cov-dist')
-    dir_bench = os.path.join(args.dir_out, 'bench')
     path_init = os.path.join(args.dir_out, f'init-loads-{args.split}.pt')
     path_model = os.path.join(args.dir_out, f'model-lbfgs-{args.split}.pth')
-    other_bench_path = os.path.join(dir_bench, 'other-lbfgs.csv')
 
 
     # ---------- ESTIMATION ---------- #
@@ -175,41 +193,8 @@ if __name__ == '__main__':
         history_size=args.history_size,
         tol=args.tol,
         patience=args.patience,
-        max_epochs=args.max_epochs
+        max_epochs=args.max_epochs,
+        benchmark=args.benchmark
     )
     sys.exit(code)
 
-
-
-
-    # suffix = args.dir_out.split('out/')[-1].replace('/', '_')
-    # path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
-    # remove_file(path_shared)
-    # remove_file(path_model)
-
-    # mp.set_start_method('spawn')
-    # processes = []
-    # for rank in range(args.world_size):
-    #     p = mp.Process(
-    #         target=init_process, 
-    #         args=(rank, args.world_size, train, path_shared, 'gloo'),
-    #         kwargs={
-    #             'dir_out': args.dir_out,
-    #             'dir_out_scratch': args.dir_out_scratch,
-    #             'split': args.split,
-    #             'sz_space': args.sz_space,
-    #             'n_facs': args.n_facs,
-    #             'alpha': args.alpha,
-    #             'lr': args.lr,
-    #             'history_size': args.history_size,
-    #             'tol': args.tol,
-    #             'patience': args.patience,
-    #             'max_epochs': args.max_epochs,
-    #             'benchmark': args.benchmark,
-    #         }
-    #     )
-    #     p.start()
-    #     processes.append(p)
-
-    # for p in processes:
-    #     p.join()

@@ -5,6 +5,8 @@ from torch.utils.data import DataLoader, Dataset, Sampler
 from torch.utils.data.dataloader import _collate_fn_t, _worker_init_fn_t
 from typing import Iterable, List, Optional
 
+from utils import gen_tensors
+
 
 __all__ = [
 
@@ -32,9 +34,24 @@ __all__ = [
 
 class CentralizedCovarianceDataset(Dataset):
 
-    def __init__(self, dir: str, split: str) -> None:
-        self.points = torch.load(os.path.join(dir, f'points.pt'))
-        self.cov = torch.load(os.path.join(dir, f'cov-{split}.pt'))
+    def __init__(self, dir_cov: str, dir_idx: str, split: str) -> None:
+
+        idx = torch.load(os.path.join(dir_idx, f'idx.pt'))
+        points_loader = gen_tensors(dir_cov, 'points')
+        cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+        points_list = []
+        cov_list = []
+        start = 0
+        for points, cov in zip(points_loader, cov_loader):
+            sz = len(cov)
+            mask = torch.logical_and(idx >= start, idx < start + sz)
+            idx_ = idx[mask] - start
+            points_list.append(points[idx_])
+            cov_list.append(cov[idx_])
+            start += sz
+
+        self.points = torch.cat(points_list)
+        self.cov = torch.cat(cov_list)
 
     def __len__(self):
         return len(self.cov)
@@ -55,24 +72,37 @@ class DistributedCovarianceDataset(Dataset):
 
     def __init__(
             self, 
-            dir: str, 
+            dir_cov: str, 
+            dir_idx: str,
             split: str,
             rank: int, 
             world_size: int
         ) -> None:
 
-        # Get point counts for all ranks and save points for this rank
+        # Get point counts for all ranks and load points/cov for this rank
         self.rank_counts = {}
-        for r in range(world_size):
-            path = os.path.join(dir, f'points-{rank}.pt')
-            points = torch.load(path)
-            self.rank_counts[r] = len(points)
-            if rank == r:
-                self.points = points
+        for r in range(world_size): 
 
-        # Get covariance for this rank
-        path = os.path.join(dir, f'cov-{split}-{rank}.pt')
-        self.cov = torch.load(path)
+            idx = torch.load(os.path.join(dir_idx, f'idx-{rank}.pt'))
+            self.rank_counts[r] = len(idx)
+            
+            if rank == r: 
+                
+                points_loader = gen_tensors(dir_cov, 'points')
+                cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+                points_list = []
+                cov_list = []
+                start = 0
+                for points, cov in zip(points_loader, cov_loader):
+                    sz = len(cov)
+                    mask = torch.logical_and(idx >= start, idx < start + sz)
+                    idx_ = idx[mask] - start
+                    points_list.append(points[idx_])
+                    cov_list.append(cov[idx_])
+                    start += sz
+
+        self.points = torch.cat(points_list)
+        self.cov = torch.cat(cov_list)
 
     def __len__(self):
         return len(self.cov)
@@ -91,18 +121,39 @@ class DistributedStratifiedCovarianceDataset(Dataset):
 
     def __init__(
             self, 
-            dir: str, 
+            dir_cov: str,
+            dir_idx: str, 
             split: str,
             rank: int, 
             world_size: int, 
         ) -> None:
 
-        # Read in this rank's data
-        strat = torch.load(os.path.join(dir, f'strat-{rank}.pt'))
-        points = torch.load(os.path.join(dir, f'points-{rank}.pt'))
-        cov = torch.load(os.path.join(dir, f'cov-{split}-{rank}.pt'))
+        # Read in this rank's indices and strata
+        idx = torch.load(os.path.join(dir_idx, f'idx-{rank}.pt'))
+        strat = torch.load(os.path.join(dir_idx, f'strat-{rank}.pt'))
         
-        # Create dictionaries that map stratum to train points/cov
+        # Get points and covariance loaders
+        points_loader = gen_tensors(dir_cov, 'points')
+        cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+
+        # Get this rank's points, strata, and covariance
+        start = 0
+        points_list = []
+        strat_list = []
+        cov_list = []
+        for points, cov  in zip(points_loader, cov_loader):
+            sz = len(cov)
+            mask = torch.logical_and(idx >= start, idx < start + sz)
+            idx_ = idx[mask]
+            strat_list.append(strat[mask])
+            points_list.append(points[idx_ - start])
+            cov_list.append(cov[idx_ - start])
+            start += sz 
+        points = torch.cat(points_list)
+        strat = torch.cat(strat_list)
+        cov = torch.cat(cov_list)
+
+        # Create dictionaries that map stratum to points/cov
         num_strata = 2 * world_size + 1
         self.strat_points = {}
         self.strat_cov = {}
@@ -131,7 +182,7 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         points_sz = sys.getsizeof(self.points.untyped_storage())
         cov_sz = sys.getsizeof(self.cov.untyped_storage())
         return points_sz + cov_sz
-    
+   
 
 
 # -------------------- SAMPLERS -------------------- #

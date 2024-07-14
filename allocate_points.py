@@ -1,22 +1,15 @@
 import argparse
 import os
-import time
 import torch
 import torch.multiprocessing as mp
-from functools import partial
 from typing import List, Tuple
 
 from config import load_config
 from utils import (
-    compute_covariance,
-    flatten_dataset, 
-    gen_points,
     init_process,
-    multiply_list, 
     gen_tensors,
     refresh_directory,
     remove_file,
-    write_rows_to_csv,
 )
 
 
@@ -77,6 +70,7 @@ def allocate_points_dsgd(
     gen = torch.Generator().manual_seed(seed)
     points_loader = gen_tensors(dir_cov, 'points')
     
+    idx_list = []
     n_batch = 0
     start = 0
     for points in points_loader: 
@@ -88,12 +82,12 @@ def allocate_points_dsgd(
         idx = torch.randperm(sz, generator=gen)[idx]
         idx = idx + start
 
-        # Write points to file
-        path = os.path.join(dir_idx, f'idx-{rank}-{n_batch}.pt')
-        torch.save(idx, path)
-
+        idx_list.append(idx)
         n_batch += 1
         start += sz
+
+    path = os.path.join(dir_idx, f'idx-{rank}.pt')
+    torch.save(torch.cat(idx_list), path)
 
 
 def allocate_points_dssgd(
@@ -125,7 +119,8 @@ def allocate_points_dssgd(
 
     # Create points and strat files for this rank
     points_loader = gen_tensors(dir_cov, 'points')
-    n_batch = 0
+    idx_list = []
+    strat_list = []
     start = 0
     for points in points_loader:
 
@@ -148,14 +143,14 @@ def allocate_points_dssgd(
         mask = strat != 1
         idx = torch.nonzero(mask).squeeze() + start
 
-        # Write points and strat to file
-        path_idx = os.path.join(dir_idx, f'idx-{rank}-{n_batch}.pt')
-        path_strat = os.path.join(dir_idx, f'strat-{rank}-{n_batch}.pt')
-        torch.save(idx, path_idx)
-        torch.save(strat[mask], path_strat)
-
-        n_batch += 1
+        idx_list.append(idx)
+        strat_list.append(strat[mask])
         start += sz
+
+    path_idx = os.path.join(dir_idx, f'idx-{rank}.pt')
+    path_strat = os.path.join(dir_idx, f'strat-{rank}.pt')
+    torch.save(torch.cat(idx_list), path_idx)
+    torch.save(torch.cat(strat_list), path_strat)
 
 
 

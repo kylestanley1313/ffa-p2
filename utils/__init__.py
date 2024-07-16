@@ -124,7 +124,7 @@ def remove_file(path):
 
 
 def write_rows_to_csv(path: str, rows: List[Dict]) -> None:
-    
+
     if not rows:
         raise ValueError("The list of rows is empty.")
 
@@ -350,8 +350,8 @@ def procrustes_rotation(input: torch.Tensor, target: torch.Tensor) -> torch.Tens
 
 # -------------------- OBJECTIVE FUNCTIONS -------------------- #
 
-def loss_fcn(preds, cov, n_vars):
-    return torch.sum((preds - cov) ** 2) / n_vars ** 2
+def loss_fcn(preds, cov):
+    return torch.sum((preds - cov) ** 2) / len(preds)
 
 
 def penalty_fcn(loads: torch.Tensor, alpha: float, diff_mat: torch.Tensor):

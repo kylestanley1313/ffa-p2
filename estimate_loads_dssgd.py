@@ -180,8 +180,7 @@ def train(
     broadcast_model(model, rank, 0)
 
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    loss_fcn_ = partial(loss_fcn, n_vars=n_vars)
-    
+
     last_objective = float('inf')
     epochs_waited = 0
     early_stop = torch.tensor(False)
@@ -197,11 +196,11 @@ def train(
             start = time.time()
 
         process_epoch(
-            model, dataloader, loss_fcn_, optimizer, 
+            model, dataloader, loss_fcn, optimizer, 
             gen, n_strata, rank, world_size
         )
         objective = compute_objective(
-            model, dataloader, loss_fcn_, 
+            model, dataloader, loss_fcn, 
             rank, world_size
         )
         

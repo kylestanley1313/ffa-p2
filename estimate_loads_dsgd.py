@@ -120,7 +120,6 @@ def train(
 
     diff_mat = create_second_difference_matrix(sz_space)
     optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    loss_fcn_ = partial(loss_fcn, n_vars=n_vars)
     penalty_fcn_ = partial(penalty_fcn, alpha=alpha, diff_mat=diff_mat)
 
     last_objective = float('inf')
@@ -139,12 +138,12 @@ def train(
 
         process_epoch(
             model, dataloader, 
-            loss_fcn_, penalty_fcn_, 
+            loss_fcn, penalty_fcn_, 
             optimizer
         )
         loss, penalty = compute_objective(
             model, dataloader, 
-            loss_fcn_, penalty_fcn_, 
+            loss_fcn, penalty_fcn_, 
             rank, world_size
         )
         

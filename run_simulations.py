@@ -58,7 +58,7 @@ if __name__ == '__main__':
     config = load_config(args.config)
     raise_error = not args.silent_fail
 
-    # # Setup simulation files
+    # Setup simulation files
     path = os.path.join(config.root, 'setup_simulations.py')
     flags = {
         'config': args.config,
@@ -104,31 +104,42 @@ if __name__ == '__main__':
         execute_script(path, flags, raise_error)
 
 
-    print(f"\n{'='*40} DATA PREPARATION {'='*40}\n")
+    print(f"\n{'='*40} COVARIANCE COMPUTATION {'='*40}\n")
+    for rep in reps: 
+        print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
+        path = os.path.join(config.root, 'compute_covariance.py')
+        flags = {
+            'config': args.config,
+            'dir_dataset': rep['dir_dataset'],
+            'dir_out': rep['dir_out'],
+            'dir_out_scratch': rep['dir_out_scratch'],
+            'world_size': rep['world_size_cov'],
+            'delta': rep['delta_est'],
+            'prop_train_time': 0.8,
+            'prop_train_space': 0.8,
+            'bsz_time': 50,
+            'bsz_space': 100,
+            'seed': rep['seed'],
+        }
+        if args.fse: 
+            flags['fse'] = None
+        execute_script(path, flags, raise_error)
+
+
+    print(f"\n{'='*40} POINT ALLOCATION {'='*40}\n")
     for method in args.le_methods:
         print(f"\n{'-'*40} method = {method} {'-'*40}\n")
         for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, 'prepare_data.py')
+            path = os.path.join(config.root, 'allocate_points.py')
             flags = {
                 'config': args.config,
-                'dir_dataset': rep['dir_dataset'],
-                'est_method': method,
                 'dir_out': rep['dir_out'],
                 'dir_out_scratch': rep['dir_out_scratch'],
-                'world_size_est': rep['world_size_est'],
-                'world_size_cov': rep['world_size_cov'],
-                'delta': rep['delta_est'],
-                'prop_train_time': 0.8,
-                'prop_train_space': 0.8,
-                'bsz_time': 50,
-                'bsz_space': 100,
+                'est_method': method,
+                'world_size': rep['world_size_est'],
                 'seed': rep['seed'],
             }
-            if args.fse: 
-                flags['fse'] = None
-            if args.benchmark: 
-                flags['benchmark'] = None
             execute_script(path, flags, raise_error)
 
 
@@ -149,8 +160,6 @@ if __name__ == '__main__':
                 'prop_init': 1.0,
                 'seed': rep['seed'],
             }
-            if args.benchmark:
-                flags['benchmark'] = None
             execute_script(path, flags, raise_error)
 
 
@@ -177,7 +186,7 @@ if __name__ == '__main__':
                         flags = flags | {
                             'lr': 0.1,
                             'history_size': 10,
-                            'tol': 1e-7,
+                            'tol': 1e-6,
                             'patience': 5,
                             'max_epochs': 5000,
                         }
@@ -187,7 +196,7 @@ if __name__ == '__main__':
                             'world_size': rep['world_size_est'],
                             'batch_size': 128,
                             'lr': 1,
-                            'tol': 1e-7,
+                            'tol': 1e-6,
                             'patience': 5,
                             'max_epochs': 5000,
                             'seed': rep['seed']
@@ -233,7 +242,7 @@ if __name__ == '__main__':
                 flags = flags | {
                     'lr': 0.1,
                     'history_size': 10,
-                    'tol': 1e-7,
+                    'tol': 1e-6,
                     'patience': 5,
                     'max_epochs': 5000,
                 }
@@ -241,9 +250,9 @@ if __name__ == '__main__':
             if method == 'dsgd':
                 flags = flags | {
                     'world_size': rep['world_size_est'],
-                    'batch_size': 32,
-                    'lr': 100,
-                    'tol': 1e-7,
+                    'batch_size': 128,
+                    'lr': 10,
+                    'tol': 1e-6,
                     'patience': 5,
                     'max_epochs': 5000,
                     'seed': rep['seed']
@@ -252,9 +261,9 @@ if __name__ == '__main__':
             if method == 'dssgd':
                 flags = flags | {
                     'world_size': rep['world_size_est'],
-                    'batch_size': 32,
-                    'lr': 100,
-                    'tol': 1e-7,
+                    'batch_size': 128,
+                    'lr': 10,
+                    'tol': 1e-6,
                     'patience': 5,
                     'max_epochs': 5000,
                     'seed': rep['seed']
@@ -281,7 +290,6 @@ if __name__ == '__main__':
                 for rep in reps:
                     print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
                     path = os.path.join(config.root, 'compute_inv_err_cov.py')
-
                     flags = {
                         'config': args.config,
                         'dir_out': rep['dir_out'],
@@ -292,8 +300,7 @@ if __name__ == '__main__':
                         'sz_space': rep['sz_space'],
                         'est_method_loads': args.le_methods[0],  # only one LE method passed
                         'delta_true': rep['delta'],
-                        'delta_est': rep['delta_est'],
-                        'eval_cutoff': 0.05,  # TODO: Fine tune
+                        'eval_cutoff': 0,  # TODO: Fine tune
                         'phi': 0.0001,  # TODO: Fine tune
                         'batch_size': 100,  # batch inv err cov in space
                     }

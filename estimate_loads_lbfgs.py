@@ -3,12 +3,8 @@ import os
 import sys
 import time
 import torch
-import torch.distributed as dist
-import torch.multiprocessing as mp
 from functools import partial
-from torch.nn.parallel import DistributedDataParallel as DDP
 
-from benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.data import CentralizedCovarianceDataset
 from utils.model import LowRankCovariance
@@ -16,12 +12,9 @@ from utils import (
     CODE_DIVERGENCE,
     CODE_NO_CONVERGENCE,
     create_second_difference_matrix,
-    gen_seeds, 
-    init_process,
     loss_fcn,
     multiply_list,
     penalty_fcn,
-    remove_file,
     write_rows_to_csv,
 )
 
@@ -81,7 +74,7 @@ def train(
         lr=lr, 
         history_size=history_size
     )
-    loss_fcn_ = partial(loss_fcn, n_vars=n_vars)
+    # loss_fcn_ = partial(loss_fcn, n_vars=n_vars)
     diff_mat = create_second_difference_matrix([n_vars])
     penalty_fcn_ = partial(penalty_fcn, alpha=alpha, diff_mat=diff_mat)
 
@@ -98,12 +91,12 @@ def train(
 
         process_epoch(
             model, dataset, 
-            loss_fcn_, penalty_fcn_, 
+            loss_fcn, penalty_fcn_, 
             optimizer
         )
         loss, penalty = compute_objective(
             model, dataset, 
-            loss_fcn_, penalty_fcn_
+            loss_fcn, penalty_fcn_
         )
         objective = loss + penalty
         print(f"epoch = {epoch + 1} | objective = {objective.item()}")

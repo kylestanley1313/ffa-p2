@@ -8,7 +8,7 @@ import torch.multiprocessing as mp
 from functools import partial
 from typing import List
 
-from benchmarking import size_dist_obj, time_dist_fcn
+from utils.benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.data import (
     DistributedStratifiedCovarianceDataset,

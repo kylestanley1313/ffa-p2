@@ -3,7 +3,7 @@ import os
 import pandas as pd
 import torch
 
-from benchmarking import aggregate_benchmarks
+from utils.benchmarking import aggregate_benchmarks
 from config import load_config
 from utils import (
     l2_norm,

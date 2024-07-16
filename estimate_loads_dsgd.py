@@ -9,7 +9,7 @@ from functools import partial
 from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import List, Tuple
 
-from benchmarking import size_dist_obj, time_dist_fcn
+from utils.benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.data import (
     BasicDataLoader,

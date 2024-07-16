@@ -45,7 +45,7 @@ if __name__ == '__main__':
         loads = torch.load(path).numpy()
     else: 
         path = os.path.join(args.dir_out, f'model-{args.est_method_loads}-full.pth')
-        loads = torch.load(path)['loads'].numpy()
+        loads = torch.load(path)['loads'].t().numpy()
 
     # Get validation indices
     path = os.path.join(dir_data, 'idx-space-valid.pt')

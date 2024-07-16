@@ -1,7 +1,6 @@
 import argparse
 import numpy as np
 import os
-import time
 import torch
 from sklearn.decomposition import PCA
 from typing import Generator
@@ -11,7 +10,6 @@ from utils import (
     gen_seeds,
     multiply_list,
     gen_tensors,
-    write_rows_to_csv
 )
 
 
@@ -77,7 +75,6 @@ if __name__ == '__main__':
     )
     parser.add_argument('--prop_init', type=float, default=1.0)
     parser.add_argument('--seed', type=int, default=12345)
-    parser.add_argument('--benchmark', action='store_true')
     args = parser.parse_args()
     
     config = load_config(args.config)
@@ -89,7 +86,6 @@ if __name__ == '__main__':
 
 
     print("Initializing loadings...")
-    start = time.time()
     pca_svd_solvers = {
         'pca_full': 'full',
         'pca_arpack': 'arpack',
@@ -108,10 +104,6 @@ if __name__ == '__main__':
         )
         loads = initializer(dataloader)
     torch.save(loads, path_init)
-    end = time.time()
-    if args.benchmark:
-        write_rows_to_csv(path_other_bench, [['initialization', end - start]])
-
 
     print("DONE!")
 

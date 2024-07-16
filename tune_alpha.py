@@ -47,7 +47,7 @@ if __name__ == '__main__':
     config = load_config(args.config)
 
     # Directory/path preparation
-    dir_cov = os.path.join(args.dir_out_scratch, f'cov-{args.est_method}')
+    dir_cov = os.path.join(args.dir_out_scratch, f'cov')
     path_alpha = os.path.join(args.dir_out, f'alpha-{args.est_method}.pt')
     path_out_mod = os.path.join(args.dir_out, f'model-{args.est_method}-train.pth')  # estimation.py output path
     path_best_mod = os.path.join(args.dir_out, f'model-{args.est_method}-train-best.pth')

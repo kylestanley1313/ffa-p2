@@ -105,10 +105,11 @@ def train(
     gen = torch.Generator().manual_seed(seed)
     
     # Set paths
-    dir_cov = os.path.join(dir_out_scratch, 'cov-dsgd')
+    dir_cov = os.path.join(dir_out_scratch, 'cov')
+    dir_idx = os.path.join(dir_out_scratch, 'idx-dsgd')
     path_model = os.path.join(dir_out, f'model-dsgd-{split}.pth')
 
-    dataset = DistributedCovarianceDataset(dir_cov, split, rank, world_size)
+    dataset = DistributedCovarianceDataset(dir_cov, dir_idx, split, rank, world_size)
     sampler = DistributedDatasetSampler(dataset, gen)
     dataloader = BasicDataLoader(dataset, batch_size=batch_size, sampler=sampler)
 

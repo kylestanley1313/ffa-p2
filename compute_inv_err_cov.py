@@ -11,6 +11,7 @@ from config import load_config
 from utils import (
     compute_covariance,
     gen_points,
+    gen_tensors,
     multiply_list
 )
 
@@ -182,7 +183,6 @@ if __name__ == '__main__':
     parser.add_argument('--sz_space', nargs='+', type=int)
     parser.add_argument('--est_method_loads', type=str, choices=['lbfgs', 'dsgd', 'dssgd'])
     parser.add_argument('--delta_true', type=float)
-    parser.add_argument('--delta_est', type=float)
     parser.add_argument('--eval_cutoff', type=float)
     parser.add_argument('--phi', type=float)
     parser.add_argument('--batch_size', type=int)
@@ -198,10 +198,8 @@ if __name__ == '__main__':
     if args.regime == 2: 
         assert args.dir_truth is not None, "Must pass dir_truth for Regime 1!"
         assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 2!"
-        assert args.delta_est is not None, "Must pass delta_est for Regime 2!"
     if args.regime == 3: 
         assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 2!"
-        assert args.delta_est is not None, "Must pass delta_est for Regime 3!"
 
 
     if args.regime == 1: 
@@ -266,20 +264,15 @@ if __name__ == '__main__':
 
         # Prepare initial error covariance, a sparse csr tensor equal to 
         #       band(C_hat - LL^T)
-        dir_data = os.path.join(args.dir_out_scratch, 'data')
         row_idx_list = []
         col_idx_list = []
         data_list = []
-        points_loader = gen_points(
-            args.sz_space, args.delta_est, n_vars, 
-            off_band=False,
-            exclude_upp_tri=False,
-            as_numpy=True
-        )
-        for points in points_loader: 
+        dir_cov = os.path.join(args.dir_out_scratch, 'cov')
+        points_loader = gen_tensors(dir_cov, 'points')
+        cov_loader = gen_tensors(dir_cov, 'cov')
+        for points, cov in zip(points_loader, cov_loader): 
             row_idx_list.append(points[:,0])
             col_idx_list.append(points[:,1])
-            cov = compute_covariance(points, dir_data, args.split)
             glob = (loads[points[:,0]] * loads[points[:,1]]).sum(axis=1)
             data_list.append(cov - glob)
         data = np.concatenate(data_list)

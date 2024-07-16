@@ -32,6 +32,11 @@ __all__ = [
 # -------------------- DATASETS -------------------- # 
 
 
+# TODO: 
+#   - Update estimation scripts
+#   - Update compute_inv_err_cov
+#   - Update run_simulations
+
 class CentralizedCovarianceDataset(Dataset):
 
     def __init__(self, dir_cov: str, dir_idx: str, split: str) -> None:
@@ -65,8 +70,6 @@ class CentralizedCovarianceDataset(Dataset):
         cov_sz = sys.getsizeof(self.cov.untyped_storage())
         return points_sz + cov_sz
     
-
-
 
 class DistributedCovarianceDataset(Dataset):
 

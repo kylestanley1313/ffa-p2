@@ -67,10 +67,11 @@ def train(
     ): 
 
     # Set directories and paths
-    dir_cov = os.path.join(dir_out_scratch, 'cov-lbfgs')
+    dir_cov = os.path.join(dir_out_scratch, 'cov')
+    dir_idx = os.path.join(dir_out_scratch, 'idx-lbfgs')
     path_model = os.path.join(dir_out, f'model-lbfgs-{split}.pth')
 
-    dataset = CentralizedCovarianceDataset(dir_cov, split)
+    dataset = CentralizedCovarianceDataset(dir_cov, dir_idx, split)
     n_vars = multiply_list(sz_space)
     path_init = os.path.join(dir_out, f'init-loads-{split}.pt')
     model = LowRankCovariance(n_vars, n_facs, path_init)
@@ -174,7 +175,6 @@ if __name__ == '__main__':
 
     # Set directories and paths
     dir_data = os.path.join(args.dir_out_scratch, 'data')
-    dir_cov = os.path.join(args.dir_out_scratch, 'cov-dist')
     path_init = os.path.join(args.dir_out, f'init-loads-{args.split}.pt')
     path_model = os.path.join(args.dir_out, f'model-lbfgs-{args.split}.pth')
 

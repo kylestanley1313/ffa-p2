@@ -166,10 +166,11 @@ def train(
     n_strata = 2 * world_size + 1
 
     # Set directories
-    dir_cov = os.path.join(dir_out_scratch, 'cov-dssgd')
+    dir_cov = os.path.join(dir_out_scratch, 'cov')
+    dir_idx = os.path.join(dir_out_scratch, 'idx-dssgd')
     path_model = os.path.join(dir_out, f'model-dssgd-{split}.pth')
 
-    dataset = DistributedStratifiedCovarianceDataset(dir_cov, split, rank, world_size)
+    dataset = DistributedStratifiedCovarianceDataset(dir_cov, dir_idx, split, rank, world_size)
     batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
     dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
 

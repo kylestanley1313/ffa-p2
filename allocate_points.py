@@ -55,7 +55,7 @@ def allocate_points_lbfgs(
         start += sz
     idx = torch.cat(idx_list)
     path = os.path.join(dir_idx, 'idx.pt')
-    torch.save(points, path)
+    torch.save(idx, path)
 
 
 def allocate_points_dsgd(

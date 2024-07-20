@@ -70,8 +70,8 @@ if __name__ == '__main__':
             os.makedirs(rep['dir_out'])
             if not os.path.exists(rep['dir_out_scratch']):
                 os.makedirs(rep['dir_out_scratch'])
-            os.makedirs(os.path.join(rep['dir_out'], 'data'))
-            os.makedirs(os.path.join(rep['dir_out'], 'cov'))
+            os.makedirs(os.path.join(rep['dir_out_scratch'], 'data'))
+            os.makedirs(os.path.join(rep['dir_out_scratch'], 'cov'))
             if args.fse:
                 os.makedirs(os.path.join(rep['dir_out'], 'err-cov'))
             for m in ['lbfgs', 'dsgd', 'dssgd']: 

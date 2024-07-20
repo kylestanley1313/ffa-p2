@@ -365,13 +365,12 @@ def penalty_fcn_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
 
 
 def compute_loss(model, dir_cov, split):
-    n_vars = model.loads.shape[0]
     points_loader = gen_tensors(dir_cov, 'points')
     cov_loader = gen_tensors(dir_cov, f'cov-{split}')
     loss = 0
     for points, cov in zip(points_loader, cov_loader):
         preds = model(points)
-        loss += loss_fcn(preds, cov, n_vars)
+        loss += loss_fcn(preds, cov)
     return loss
 
 

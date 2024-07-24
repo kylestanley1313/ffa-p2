@@ -136,7 +136,7 @@ def estimate_factors_rbegls(
     and a roughness penalty:
             vec(A) = (H_2 x H_1 + D x I * gamma / K)_inv @ vec(H_3)
             F = A @ E
-        where H_1 = L @ B_inv Lt
+        where H_1 = L @ B_inv @ Lt
               H_2 = E @ Et
               H_3 = L @ B_inv @ X @ Et
               E is matrix containing discretized basis elements
@@ -199,7 +199,6 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--dir_truth', type=str)
     parser.add_argument(
         '--est_methods', type=str, nargs='+',
         choices=['pls', 'pgls', 'rbels', 'rbegls'],
@@ -223,18 +222,18 @@ if __name__ == '__main__':
     #   (3) Estimate from (C_hat, L_hat, B_hat)
 
     if args.regime == 1:
-        path = os.path.join(args.dir_truth, 'loads.pt')
+        path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path).numpy()
         get_inv_err_cov_loader = partial(
             get_generator,
             gen_fcn=gen_arrays,
-            dir=args.dir_truth,
+            dir=args.dir_out,
             prefix='inv-err-cov_r1',
             batch_size=args.batch_size
         )
 
     if args.regime == 2:
-        path = os.path.join(args.dir_truth, 'loads.pt')
+        path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path).numpy()
         get_inv_err_cov_loader = partial(
             get_generator,

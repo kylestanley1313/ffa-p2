@@ -23,7 +23,6 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--dir_truth', type=str)
     parser.add_argument('--est_method', type=str, choices=['rbels', 'rbegls'])
     parser.add_argument('--n_time', type=int)
     parser.add_argument('--est_method_loads', type=str)
@@ -41,7 +40,7 @@ if __name__ == '__main__':
     
     # Get loadings
     if args.regime == 1: 
-        path = os.path.join(args.dir_truth, 'loads.pt')
+        path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path).numpy()
     else: 
         path = os.path.join(args.dir_out, f'model-{args.est_method_loads}-full.pth')
@@ -66,7 +65,6 @@ if __name__ == '__main__':
         'config': args.config,
         'dir_out': args.dir_out,
         'dir_out_scratch': args.dir_out_scratch,
-        'dir_truth': args.dir_truth,
         'est_methods': args.est_method,
         'split': 'train',
         'est_method_loads': args.est_method_loads,

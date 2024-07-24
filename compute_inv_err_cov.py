@@ -177,7 +177,6 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--dir_truth', type=str)
     parser.add_argument('--regime', type=int, choices=[1, 2, 3])
     parser.add_argument('--split', type=str)
     parser.add_argument('--sz_space', nargs='+', type=int)
@@ -193,10 +192,8 @@ if __name__ == '__main__':
 
     # Validate arguments
     if args.regime == 1:
-        assert args.dir_truth is not None, "Must pass dir_truth for Regime 1!"
         assert args.delta_true is not None, "Must pass delta_true for Regime 1!"
     if args.regime == 2: 
-        assert args.dir_truth is not None, "Must pass dir_truth for Regime 1!"
         assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 2!"
     if args.regime == 3: 
         assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 2!"
@@ -205,7 +202,7 @@ if __name__ == '__main__':
     if args.regime == 1: 
 
         # Read in error function set
-        path = os.path.join(args.dir_truth, 'errs.pt')
+        path = os.path.join(args.dir_out, 'errs.pt')
         err = torch.load(path)  # (J, T, S)
         err = torch.transpose(torch.transpose(err, 0, 2), 1, 2)  # (S, J, T)
         n_time = err.size(2)
@@ -246,14 +243,14 @@ if __name__ == '__main__':
             batch_size=args.batch_size
         )
         for i, rows in enumerate(inv_err_cov_loader):
-            path = os.path.join(args.dir_truth, f'inv-err-cov_r{args.regime}_{i}.npy')
+            path = os.path.join(args.dir_out, f'inv-err-cov_r{args.regime}_{i}.npy')
             np.save(path, rows)
 
     if args.regime in [2, 3]:
 
         # Read in the appropriate loadings
         if args.regime == 2: 
-            path = os.path.join(args.dir_truth, 'loads.pt')
+            path = os.path.join(args.dir_out, 'loads.pt')
             loads = torch.load(path).t().numpy()
         if args.regime == 3: 
             path = os.path.join(

@@ -57,6 +57,10 @@ if __name__ == '__main__':
                 config.scratch_root, 'datasets', 
                 args.design, f'sim-{sim_cnt}', f'rep-{r}'
             )
+            rep['dir_dataset_truth'] = os.path.join(
+                config.scratch_root, 'datasets', 
+                args.design, f'sim-{sim_cnt}'
+            )
             rep['dir_out_sim'] = os.path.join(
                 config.root, 'out', 
                 args.design, f'sim-{sim_cnt}'

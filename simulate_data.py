@@ -7,11 +7,10 @@ import torch
 from abc import ABC, abstractmethod
 from functools import partial
 from scipy.interpolate import BSpline, splrep
-from typing import Callable, Generator, List, Sequence, Union
+from typing import Callable, List, Sequence, Union
 
 from config import load_config
 from utils import (
-    gen_seeds,
     multiply_list,
     refresh_directory, 
     reshape_sparse_coo_tensor,
@@ -1191,14 +1190,20 @@ if __name__ == '__main__':
         help="Configuration (i.e., mode) in which to run script."
     )
     parser.add_argument(
-        '--dir_dataset',
-        help="Dataset directory in which simulated data will be stored."
+        '--dir_dataset', type=str, 
+        help="Directory in which simulated data will be stored."
     )
     parser.add_argument(
-        '--dir_out',
-        help=("Output directory in which loadings, factors, and error "
-              "covariance will be stored.")
+        '--dir_dataset_truth', type=str, 
+        help="Directory in which true loadings and errors are or will be stored."
     )
+    parser.add_argument(
+        '--dir_out', type=str,
+        help=("Directory in which to write flattened/scaled loadings, errors, "
+              "and factors")
+    )
+    parser.add_argument('--read_loads', action='store_true')
+    parser.add_argument('--read_errs', action='store_true')
     parser.add_argument(
         '--n_time', type=int,
         help=("Number of time points for which to simulate data. Since the "
@@ -1237,13 +1242,8 @@ if __name__ == '__main__':
         help="Maximumum number of time points to include in each file."
     )
     parser.add_argument(
-        '--refresh_dirs', action='store_true',
+        '--refresh_dataset_dir', action='store_true',
         help="Flag for refreshing /datasets and /out directories."
-    )
-    parser.add_argument(
-        '--dir_truth', type=str,
-        help=("Directory in which to store true loadings, factors, and "
-              "errors.If None, then do not save.")
     )
     parser.add_argument(
         '--seed', default=12345, type=int,
@@ -1274,9 +1274,8 @@ if __name__ == '__main__':
     print("Preparing indices and points...")
 
     # Refresh directories
-    if args.refresh_dirs:
+    if args.refresh_dataset_dir:
         refresh_directory(args.dir_dataset)
-        refresh_directory(args.dir_out)
 
     # Generate `points_space` and `indices_space` from `sz_space`
     points_space_list = []
@@ -1297,22 +1296,42 @@ if __name__ == '__main__':
     indices = torch.cartesian_prod(indices_time, *indices_space_list)
     points = torch.cartesian_prod(points_time, *points_space_list)
 
+    # NOTE: 
+    #   - Directory dir_dataset_truth contains: 
+    #       * unflattened and unscaled loadings
+    #       * unflattened and unscaled errors
+    #   - Directory dir_out contains:
+    #       * flattened and scaled loadings
+    #       * flattened and scaled errors
+    #       * factors
+
     # Build loading tensor
     print("Preparing loadings...")
-    vals = load_scheme(points_space)  # n_facs-by-sz_shape
-    loads = build_loadings(indices_space, args.sz_space, vals)
+    path = os.path.join(args.dir_dataset_truth, 'loads.pt')
+    if args.read_loads: 
+        loads = torch.load(path)
+    else: 
+        vals = load_scheme(points_space)  # n_facs-by-sz_shape
+        loads = build_loadings(indices_space, args.sz_space, vals) 
+        torch.save(loads, path)
 
     # Build factor tensor
     print("Preparing factors...")
     kernel = partial(squared_exponential_kernel, length=args.factor_kernel_length)
     facs = simulate_gauss_procs(points_time, args.n_facs, kernel, gen).t()  # n_time-by-n_facs
+    torch.save(facs, os.path.join(args.dir_out, 'facs.pt'))
 
     # Build error tensor, then scale error tensor by coefficients
     # TODO: Is there a way to accelerate error generation? Currently much slower
     # than loading/factor generation. Cache error schemes?
     print("Preparing errors....")
-    vals = err_scheme(points)  
-    errs = build_errors(indices, sz, vals)  # n_fcns-by-n_time-by-sz_shape (sparse)
+    path = os.path.join(args.dir_dataset_truth, 'errs.pt')
+    if args.read_errs:
+        errs = torch.load(path)
+    else: 
+        vals = err_scheme(points)  
+        errs = build_errors(indices, sz, vals)  # n_fcns-by-n_time-by-sz_shape (sparse)
+        torch.save(errs, path)
 
 
     # ---------- DATA SIMULATION ---------- #
@@ -1336,21 +1355,17 @@ if __name__ == '__main__':
     #   respectively. This means that the "true" loadings and errors are not
     #   `loads` and `errs`, but these quantities scaled by the aforementioned
     #   factors. 
-    if args.dir_truth is not None:
-        n_vars = multiply_list(loads.shape[1:])
-        loads = loads.reshape(loads.shape[0], n_vars)
-        errs = reshape_sparse_coo_tensor(errs, [*errs.shape[:2], n_vars])
-        torch.save(
-            loads * args.prop_global / norm_global, 
-            os.path.join(args.dir_truth, 'loads.pt')
-        )
-        torch.save(facs, os.path.join(args.dir_truth, 'facs.pt'))
-        torch.save(
-            errs * (1 - args.prop_global) / norm_local, 
-            os.path.join(args.dir_truth, 'errs.pt')
-        )
+    n_vars = multiply_list(loads.shape[1:])
+    loads = loads.reshape(loads.shape[0], n_vars)
+    torch.save(
+        loads * args.prop_global / norm_global, 
+        os.path.join(args.dir_out, 'loads.pt')
+    )
+    errs = reshape_sparse_coo_tensor(errs, [*errs.shape[:2], n_vars])
+    torch.save(
+        errs * (1 - args.prop_global) / norm_local, 
+        os.path.join(args.dir_out, 'errs.pt')
+    )
 
     print("DONE!")
-
-    # NOTE: It takes 90 seconds to generate data for a 30-by-30 spatial grid on
-    # 500 time points! Consider caching error schemes. 
+ 

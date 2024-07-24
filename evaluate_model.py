@@ -210,13 +210,14 @@ if __name__ == '__main__':
 
                 # Read true factors
                 dir_sim = os.path.join(config.root, 'designs', des_id, sim_id)
-                dir_out_sim = os.path.join(config.root, 'out', des_id, sim_id)
-                facs = torch.load(os.path.join(dir_out_sim, 'facs.pt')).t()
 
                 for r in range(design['n_reps']):
 
                     # Load repetition
                     rep = load_yaml(os.path.join(dir_sim, f'rep-{r}.yml'))
+
+                    # Load factors
+                    facs = torch.load(rep['dir_out_rep'], 'facs.pt')
 
                     # Compute estimation error each method
                     for method in args.fse_methods:

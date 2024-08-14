@@ -201,37 +201,31 @@ if __name__ == '__main__':
 
     if args.regime == 1: 
 
-        # Read in error function set
-        path = os.path.join(args.dir_out, 'errs.pt')
-        err = torch.load(path)  # (J, T, S)
-        err = torch.transpose(torch.transpose(err, 0, 2), 1, 2)  # (S, J, T)
-        n_time = err.size(2)
+        # Read in spatial and temporal function sets
+        err_space = torch.load(os.path.join(args.dir_out, 'errs-space.pt'))  # (J, S)
+        err_time = torch.load(os.path.join(args.dir_out, 'errs-time.pt'))  # (J, T)
+        n_fcns, n_space = err_space.shape
 
-        # Estimate error covariance from error function set
-        points_loader = gen_points(
-            args.sz_space, args.delta_true, n_vars, 
-            off_band=False,
-            exclude_upp_tri=False,
-            as_numpy=False
-        )
-        row_idx_list = []
-        col_idx_list = []
-        data_list = []
-        for points in points_loader:
-            n_points = len(points)
-            vals = torch.zeros(n_points, dtype=torch.float64)
-            for i in range(n_points):
-                vals[i] = (err[points[i,0]] * err[points[i,1]]).sum() / n_time
-            row_idx_list.append(points[:,0].numpy())
-            col_idx_list.append(points[:,1].numpy())
-            data_list.append(vals.numpy())
-        data = np.concatenate(data_list)
-        row_idx = np.concatenate(row_idx_list)
-        col_idx = np.concatenate(col_idx_list)
+        # Build error covariance one space-time function at a time
+        # NOTE: c(s1, s2) = (1/n_time) sum_t sum_j e_j(s1, t) e_j(s2, t)
+        #                 = sum_j w_j(s1) w_j(s2) (mean_t u^2_j(t))
         err_cov = scipy.sparse.csr_matrix(
-            (data, (row_idx, col_idx)),
-            shape=(n_vars, n_vars)
+            (np.array([]), (np.array([]), np.array([]))), 
+            shape=(n_space, n_space)
         )
+        scales = torch.mean(err_time ** 2, dim=1)
+        scales[torch.isinf(scales)] = 1.0  # replace infinite scales with 1 to avoid NaNs
+        for j in range(n_fcns):
+            indices = err_space[j].coalesce().indices()[0]
+            values = err_space[j].coalesce().values()
+            outer_indices = torch.cartesian_prod(indices, indices).t()
+            outer_values = torch.outer(values, values).flatten()
+            outer_values *= scales[j]
+            err_cov += scipy.sparse.csr_matrix(
+                (outer_values.numpy(),  # data
+                (outer_indices[0].numpy(), outer_indices[1].numpy())), # (row_idx, col_idx)
+                shape=(n_space, n_space)
+            )
 
         # Obtain low-rank approximation for faster inversion
         evals, evecs = get_thresholded_epairs(err_cov, args.eval_cutoff)

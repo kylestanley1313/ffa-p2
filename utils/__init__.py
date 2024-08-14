@@ -8,7 +8,7 @@ import sys
 import torch
 import torch.distributed as dist
 import yaml
-from typing import Callable, Dict, Generator, List, Sequence, Tuple, Union
+from typing import Callable, Dict, Generator, List, Optional, Sequence, Tuple, Union
 
 from utils.model import LowRankCovariance
 
@@ -52,7 +52,7 @@ def write_generated_tensor(tensor_loader: Generator, dir: str, prefix: str):
         torch.save(batch, path)
 
 
-def gen_tensors(dir: str, prefix: str, batch_size: int = None) -> Generator:
+def gen_tensors(dir: str, prefix: str, batch_size: Optional[int] = None) -> Generator:
     files = sorted(os.listdir(dir))
 
     if batch_size is None:  # each batch is a file
@@ -73,7 +73,7 @@ def gen_tensors(dir: str, prefix: str, batch_size: int = None) -> Generator:
             yield leftover
                 
 
-def gen_arrays(dir: str, prefix: str, batch_size: int = None) -> Generator:
+def gen_arrays(dir: str, prefix: str, batch_size: Optional[int] = None) -> Generator:
     files = sorted(os.listdir(dir))
 
     if batch_size is None:  # each batch is a file

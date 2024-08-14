@@ -2,20 +2,22 @@ import argparse
 import os
 import torch
 import torch.multiprocessing as mp
-from functools import partial
+from typing import List
 
 from config import load_config
 from utils import (
     flatten_dataset, 
     gen_points,
     gen_tensors,
+    init_process,
     multiply_list, 
+    remove_file,
     refresh_directory,
 )
 
 
 def compute_covariance(
-        points_file: str,
+        point_file: str,
         dir_cov: str,
         dir_data: str
     ) -> None:
@@ -24,8 +26,10 @@ def compute_covariance(
     validation covariances."""
 
     # Read in points
-    path = os.path.join(dir_cov, points_file)
+    path = os.path.join(dir_cov, point_file)
     points = torch.load(path)
+    rows = points[:, 0]
+    cols = points[:, 1]
 
     def _compute_covariance(split: str) -> None: 
 
@@ -37,24 +41,33 @@ def compute_covariance(
         n = 0
         data_loader = gen_tensors(dir_data, f'data-time-{split}')
         for data in data_loader: 
-
             n += len(data)
-            for i in range(num_points): 
-                row, col = points[i]
-                t1[i] += torch.sum(data[:,row] * data[:,col])
-                t2[i] += torch.sum(data[:,row])
-                t3[i] += torch.sum(data[:,col])
+            t1 = torch.sum(data[:,rows] * data[:,cols], dim=0)
+            t2 = torch.sum(data[:,rows], dim=0)
+            t3 = torch.sum(data[:,cols], dim=0)
 
         cov = (t1 - t2 * t3 / n) / (n - 1)
 
         # Save covariances
-        cov_file = points_file.replace('points', f'cov-{split}')
+        cov_file = point_file.replace('points', f'cov-{split}')
         cov_path = os.path.join(dir_cov, cov_file)
         torch.save(cov, cov_path)
 
     _compute_covariance('full')
     _compute_covariance('train')
     _compute_covariance('valid')
+
+
+def compute_covariance_for_point_files(
+        rank: int,
+        world_size: int,
+        point_files: List[str],
+        dir_cov: str,
+        dir_data:str
+    ) -> None:
+    for point_file in point_files: 
+        compute_covariance(point_file, dir_cov, dir_data)
+
 
 
 if __name__ == '__main__':
@@ -143,14 +156,28 @@ if __name__ == '__main__':
     # ---------- COVARIANCE COMPUTATION ---------- #
     print("Computing covariance...")
 
+    # Divide points files among workers
+    point_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
+    processes = []
+    remove_file(path_shared)
     mp.set_start_method('spawn')
-    points_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
-    pool = mp.Pool(processes=args.world_size)
-    results = pool.map(
-        partial(compute_covariance, dir_cov=dir_cov, dir_data=dir_data), 
-        points_files
-    )
-    pool.close()
-    pool.join()
+    for rank in range(args.world_size):
+        p = mp.Process(
+            target=init_process,
+            args=(
+                rank, args.world_size, compute_covariance_for_point_files, 
+                path_shared, config.backend
+            ),
+            kwargs={
+                'point_files': point_files[slice(rank, len(point_files), args.world_size)],
+                'dir_cov': dir_cov,
+                'dir_data': dir_data,
+            }
+        )
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()
 
     print("DONE!")

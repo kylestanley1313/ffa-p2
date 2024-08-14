@@ -159,8 +159,8 @@ if __name__ == '__main__':
                 'delta': rep['delta_est'],
                 'prop_train_time': 0.8,
                 'prop_train_space': 0.8,
-                'bsz_time': 50,
-                'bsz_space': 100,
+                'bsz_time': 500,
+                'bsz_space': 1000,
                 'seed': rep['seed'],
             }
             if args.methods_fse is not None: 
@@ -228,21 +228,21 @@ if __name__ == '__main__':
 
                     if method == 'lbfgs':
                         flags = flags | {
-                            'lr': 0.1,
+                            'lr': 1.0,
                             'history_size': 10,
                             'tol': 1e-6,
                             'patience': 5,
-                            'max_epochs': 5000,
+                            'max_epochs': 1000,
                         }
 
                     if method == 'dsgd':
                         flags = flags | {
                             'world_size': rep['world_size_est'],
-                            'batch_size': 128,
-                            'lr': 0.1,
+                            'batch_size': 1024,
+                            'lr': 4.0,
                             'tol': 1e-6,
                             'patience': 5,
-                            'max_epochs': 5000,
+                            'max_epochs': 1000,
                             'seed': rep['seed']
                         }
 
@@ -276,41 +276,41 @@ if __name__ == '__main__':
                 }
 
                 if method in ['lbfgs', 'dsgd']:
-                    if 'tune_alpha' not in steps: 
-                        flags['alpha'] = 0
-                    else: 
+                    try: 
                         flags['alpha'] = torch.load(
                             os.path.join(rep['dir_out'], f'alpha-{method}.pt')
                         ).item()
+                    except FileNotFoundError:
+                        flags['alpha'] = 0
 
                 if method == 'lbfgs':
                     flags = flags | {
-                        'lr': 0.1,
+                        'lr': 1.0,
                         'history_size': 10,
                         'tol': 1e-6,
                         'patience': 5,
-                        'max_epochs': 5000,
+                        'max_epochs': 1000,
                     }
 
                 if method == 'dsgd':
                     flags = flags | {
                         'world_size': rep['world_size_est'],
-                        'batch_size': 128,
-                        'lr': 0.1,
+                        'batch_size': 1024,
+                        'lr': 4.0,
                         'tol': 1e-6,
                         'patience': 5,
-                        'max_epochs': 5000,
+                        'max_epochs': 1000,
                         'seed': rep['seed']
                     }
 
                 if method == 'dssgd':
                     flags = flags | {
                         'world_size': rep['world_size_est'],
-                        'batch_size': 128,
-                        'lr': 0.1,
+                        'batch_size': 4096,
+                        'lr': 16.0,
                         'tol': 1e-6,
                         'patience': 5,
-                        'max_epochs': 5000,
+                        'max_epochs': 1000,
                         'seed': rep['seed']
                     }
 

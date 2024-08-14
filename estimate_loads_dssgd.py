@@ -5,10 +5,8 @@ import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from functools import partial
 from typing import List
 
-from utils.benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.data import (
     DistributedStratifiedCovarianceDataset,
@@ -17,7 +15,6 @@ from utils.data import (
 )
 from utils import (
     CODE_DIVERGENCE,
-    CODE_NO_CONVERGENCE,
     gen_seeds, 
     init_process,
     loss_fcn,
@@ -275,7 +272,6 @@ def train(
 
             if not early_stop:
                 print(f"Warning: No convergence after {epoch + 1} epochs.")
-                sys.exit(CODE_NO_CONVERGENCE)
             
 
     dist.destroy_process_group()
@@ -327,8 +323,6 @@ if __name__ == '__main__':
     # ---------- ESTIMATION ---------- #
     print("Fitting model...")
 
-    suffix = args.dir_out.split('/')[-1]
-    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
     processes = []
     for rank in range(args.world_size):

@@ -10,7 +10,6 @@ from utils.data import CentralizedCovarianceDataset
 from utils.model import LowRankCovariance
 from utils import (
     CODE_DIVERGENCE,
-    CODE_NO_CONVERGENCE,
     create_second_difference_matrix,
     loss_fcn,
     multiply_list,
@@ -138,7 +137,6 @@ def train(
     else: 
         if not early_stop:
             print(f"Warning: No convergence after {epoch + 1} epochs.")
-            return CODE_NO_CONVERGENCE
         
         # Save model (even if no convergence)
         torch.save(model.state_dict(), path_model)

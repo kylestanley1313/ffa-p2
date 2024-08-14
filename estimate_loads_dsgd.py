@@ -222,7 +222,7 @@ def train(
     
             if not early_stop:
                 print(f"Warning: No convergence after {epoch + 1} epochs.")
-                sys.exit(CODE_NO_CONVERGENCE)
+                # sys.exit(CODE_NO_CONVERGENCE)
             
 
     dist.destroy_process_group()
@@ -257,6 +257,8 @@ if __name__ == '__main__':
     path_init = os.path.join(args.dir_out, f'init-loads-{args.split}.pt')
     path_model = os.path.join(args.dir_out, f'model-dsgd-{args.split}.pth')
     other_bench_path = os.path.join(dir_bench, 'other-dsgd.csv')
+    suffix = args.dir_out.split('out/')[-1].replace('/', '_')
+    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     
     # Seeding
     gen = torch.Generator().manual_seed(args.seed)
@@ -266,8 +268,6 @@ if __name__ == '__main__':
     # ---------- ESTIMATION ---------- #
     print("Fitting model...")
 
-    suffix = args.dir_out.split('out/')[-1].replace('/', '_')
-    path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
     remove_file(path_shared)
     remove_file(path_model)
 

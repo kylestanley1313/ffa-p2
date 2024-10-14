@@ -67,7 +67,7 @@ def get_random_color(seed):
     return rgb_to_hex(r, g, b)
 
 
-def plot_n_arrays(arrays, seed=1234):
+def plot_n_arrays(arrays, seed=1234, path=None):
 
     for arr in arrays[1:]:
         assert len(arrays[0]) == len(arr), "Arrays must be of the same length"
@@ -92,8 +92,12 @@ def plot_n_arrays(arrays, seed=1234):
     ax.set_title('Two Arrays')
     ax.legend()
 
-    # Show the plot
-    plt.show()
+    # Show or save plot
+    if path: 
+        plt.savefig(path)
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_heatmap(
@@ -102,15 +106,23 @@ def plot_heatmap(
         xlabel='X-axis', 
         ylabel='Y-axis', 
         colorbar_label='Values', 
-        cmap='viridis'
+        cmap='viridis',
+        path=None
     ):
+    # Create plot
     plt.figure(figsize=(8, 6))
     plt.imshow(array, aspect='auto', cmap=cmap)
     plt.colorbar(label=colorbar_label)
     plt.title(title)
     plt.xlabel(xlabel)
     plt.ylabel(ylabel)
-    plt.show()
+
+    # Show or save plot
+    if path: 
+        plt.savefig(path)
+        plt.close()
+    else:
+        plt.show()
 
 
 def plot_side_by_side_heatmaps(matrix1, matrix2, cmap='viridis'):

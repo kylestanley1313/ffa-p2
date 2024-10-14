@@ -9,10 +9,8 @@ from typing import Generator, Tuple
 
 from config import load_config
 from utils import (
-    compute_covariance,
-    gen_points,
     gen_tensors,
-    multiply_list
+    multiply_list,
 )
 
 
@@ -59,6 +57,8 @@ def get_thresholded_epairs(err_cov, cutoff):
                 vr, vi = err_cov_petsc.createVecs()
                 solver.getEigenvector(j, vr, vi)
                 evecs.append(vr.getArray())
+            else: 
+                break
 
         evals = np.array(evals)
         evecs = np.array(evecs).T
@@ -135,7 +135,6 @@ def invert_err_cov_old(evals, evecs, phi):
     )
     return inv_est_err_cov
 
-
 def invert_err_cov(
         evals: np.ndarray, 
         evecs: np.ndarray, 
@@ -181,7 +180,7 @@ if __name__ == '__main__':
     parser.add_argument('--split', type=str)
     parser.add_argument('--sz_space', nargs='+', type=int)
     parser.add_argument('--est_method_loads', type=str, choices=['lbfgs', 'dsgd', 'dssgd'])
-    parser.add_argument('--delta_true', type=float)
+    parser.add_argument('--delta', type=float)
     parser.add_argument('--eval_cutoff', type=float)
     parser.add_argument('--phi', type=float)
     parser.add_argument('--batch_size', type=int)
@@ -189,14 +188,15 @@ if __name__ == '__main__':
 
     config = load_config(args.config)
     n_vars = multiply_list(args.sz_space)
+    ndim_space = len(args.sz_space)
 
     # Validate arguments
-    if args.regime == 1:
-        assert args.delta_true is not None, "Must pass delta_true for Regime 1!"
-    if args.regime == 2: 
+    if args.regime == 2: # invert C_hat - L*Lt 
+        assert args.delta is not None, "Must pass delta for Regime 2!"
         assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 2!"
-    if args.regime == 3: 
-        assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 2!"
+    if args.regime == 3: # invert C_hat - L_hat*Lt_hat
+        assert args.delta is not None, "Must pass delta for Regime 3!"
+        assert args.dir_out_scratch is not None, "Must pass dir_out_scratch for Regime 3!"
 
 
     if args.regime == 1: 
@@ -237,7 +237,7 @@ if __name__ == '__main__':
             batch_size=args.batch_size
         )
         for i, rows in enumerate(inv_err_cov_loader):
-            path = os.path.join(args.dir_out, f'inv-err-cov_r{args.regime}_{i}.npy')
+            path = os.path.join(args.dir_out, 'err-cov', f'inv-err-cov_reg-{args.regime}_i-{i}_.npy')
             np.save(path, rows)
 
     if args.regime in [2, 3]:
@@ -259,13 +259,19 @@ if __name__ == '__main__':
         col_idx_list = []
         data_list = []
         dir_cov = os.path.join(args.dir_out_scratch, 'cov')
-        points_loader = gen_tensors(dir_cov, 'points')
-        cov_loader = gen_tensors(dir_cov, 'cov')
+        points_loader = gen_tensors(dir_cov, 'points-onband', sort_by=('i', int))
+        cov_loader = gen_tensors(dir_cov, f'cov-onband_split-{args.split}', sort_by=('i', int))
         for points, cov in zip(points_loader, cov_loader): 
-            row_idx_list.append(points[:,0])
-            col_idx_list.append(points[:,1])
+            
+            # Compute initial non-zero elements
             glob = (loads[points[:,0]] * loads[points[:,1]]).sum(axis=1)
-            data_list.append(cov - glob)
+            data = cov - glob
+
+            # Update lists, including symmetric counterparts
+            row_idx_list += [points[:,0], points[:,1]]
+            col_idx_list += [points[:,1], points[:,0]]
+            data_list += [data, data]
+            
         data = np.concatenate(data_list)
         row_idx = np.concatenate(row_idx_list)
         col_idx = np.concatenate(col_idx_list)
@@ -286,6 +292,6 @@ if __name__ == '__main__':
 
         # Write inverse in batches
         for i, rows in enumerate(inv_err_cov_loader):
-            path = os.path.join(args.dir_out, 'err-cov', f'inv-err-cov_r{args.regime}_{i}.npy')
+            path = os.path.join(args.dir_out, 'err-cov', f'inv-err-cov_reg-{args.regime}_i-{i}_.npy')
             np.save(path, rows)
 

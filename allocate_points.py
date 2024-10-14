@@ -45,7 +45,7 @@ def allocate_points_lbfgs(
     This function will only be called for relativley small datasets, 
     so memory-efficient batching of output files need not be used. 
     """
-    points_loader = gen_tensors(dir_cov, 'points')
+    points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
     idx_list = []
     start = 0
     for points in points_loader:
@@ -65,10 +65,10 @@ def allocate_points_dsgd(
         dir_idx: str,
         seed: int,
     ) -> None:
-    """Generates and writes files of the form idx-{rank}-{n_batch}.pt."""
+    """Generates and writes files of the form idx-{rank}.pt."""
 
     gen = torch.Generator().manual_seed(seed)
-    points_loader = gen_tensors(dir_cov, 'points')
+    points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
     
     idx_list = []
     n_batch = 0
@@ -98,8 +98,8 @@ def allocate_points_dssgd(
         n_vars: int, 
         seed: int,
     ) -> None:
-    """Generates and writes the files of the form idx-{rank}-{n_batch}.pt 
-    and strat-{rank}-{n_batch}.pt."""    
+    """Generates and writes the files of the form idx-{rank}.pt 
+    and strat-{rank}.pt."""    
     gen = torch.Generator().manual_seed(seed)
 
     # Create dict mapping this rank's blocks to their stratum
@@ -118,7 +118,7 @@ def allocate_points_dssgd(
     segs = segs[torch.randperm(n_vars, generator=gen)]
 
     # Create points and strat files for this rank
-    points_loader = gen_tensors(dir_cov, 'points')
+    points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
     idx_list = []
     strat_list = []
     start = 0
@@ -178,7 +178,7 @@ if __name__ == '__main__':
         refresh_directory(dir_idx)
 
     # Get the number of variables
-    path = os.path.join(args.dir_out_scratch, 'data', 'data-time-full-0.pt')
+    path = os.path.join(args.dir_out_scratch, 'data', 'data-time_split-full_i-0_.pt')
     n_vars = torch.load(path).size(1)
 
 

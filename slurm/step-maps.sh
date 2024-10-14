@@ -28,25 +28,25 @@ step_cpus[estimate-factor-scores]=1
 declare -A step_mem_per_cpu
 step_mem_per_cpu[setup-simulations]=1
 step_mem_per_cpu[simulate-data]=20
-step_mem_per_cpu[compute-covariance]=5
+step_mem_per_cpu[compute-covariance]=20
 step_mem_per_cpu[allocate-points]=5
 step_mem_per_cpu[initialize-loadings]=5
 step_mem_per_cpu[tune-alpha]=5
 step_mem_per_cpu[estimate-loadings]=5
-step_mem_per_cpu[compute-inv-err-cov]=5
+step_mem_per_cpu[compute-inv-err-cov]=20
 step_mem_per_cpu[tune-gamma]=5
 step_mem_per_cpu[estimate-factor-scores]=5
 
-# Dictionary mapping step to walltime ()
+# Dictionary mapping step to walltime
 declare -A step_time
-step_time[setup-simulations]=00:05:00
-step_time[simulate-data]=01:00:00
-step_time[compute-covariance]=02:00:00
-step_time[allocate-points]=00:10:00
-step_time[initialize-loadings]=00:10:00
-step_time[tune-alpha]=00:10:00
-step_time[estimate-loadings]=00:10:00
-step_time[compute-inv-err-cov]=00:10:00
-step_time[tune-gamma]=00:10:00
-step_time[estimate-factor-scores]=00:10:00
+step_time[setup-simulations]=01:00:00
+step_time[simulate-data]=06:00:00
+step_time[compute-covariance]=12:00:00  # 24:00:00
+step_time[allocate-points]=06:00:00
+step_time[initialize-loadings]=00:6:00
+step_time[tune-alpha]=12:00:00
+step_time[estimate-loadings]=6:00:00
+step_time[compute-inv-err-cov]=12:00:00
+step_time[tune-gamma]=06:00:00
+step_time[estimate-factor-scores]=06:00:00
 

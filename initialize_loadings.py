@@ -95,7 +95,11 @@ if __name__ == '__main__':
         n_vars = multiply_list(args.sz_space)
         loads = torch.randn(n_vars, args.n_facs, generator=gen, dtype=torch.float64)
     else:
-        dataloader = gen_tensors(dir_data, f'data-time-{args.split}')
+        dataloader = gen_tensors(
+            dir_data, 
+            f'data-time_split-{args.split}_', 
+            sort_by=('i', int)
+        )
         initializer = PCALoadingInitializer(
             pca_svd_solvers[args.init_method], 
             args.n_facs, 

@@ -18,6 +18,7 @@ from utils import (
 
 def compute_covariance(
         point_file: str,
+        point_prefix: str,
         dir_cov: str,
         dir_data: str
     ) -> None:
@@ -30,6 +31,7 @@ def compute_covariance(
     points = torch.load(path)
     rows = points[:, 0]
     cols = points[:, 1]
+    cov_prefix = point_prefix.replace('points', 'cov')
 
     def _compute_covariance(split: str) -> None: 
 
@@ -39,7 +41,7 @@ def compute_covariance(
         t2 = torch.zeros(num_points, dtype=torch.float64)
         t3 = torch.zeros(num_points, dtype=torch.float64)
         n = 0
-        data_loader = gen_tensors(dir_data, f'data-time-{split}')
+        data_loader = gen_tensors(dir_data, f'data-time_split-{split}_', sort_by=('i', int))
         for data in data_loader: 
             n += len(data)
             t1 = torch.sum(data[:,rows] * data[:,cols], dim=0)
@@ -49,7 +51,7 @@ def compute_covariance(
         cov = (t1 - t2 * t3 / n) / (n - 1)
 
         # Save covariances
-        cov_file = point_file.replace('points', f'cov-{split}')
+        cov_file = point_file.replace(point_prefix, f'{cov_prefix}_split-{split}')
         cov_path = os.path.join(dir_cov, cov_file)
         torch.save(cov, cov_path)
 
@@ -62,11 +64,12 @@ def compute_covariance_for_point_files(
         rank: int,
         world_size: int,
         point_files: List[str],
+        point_prefix: str,
         dir_cov: str,
         dir_data:str
     ) -> None:
     for point_file in point_files: 
-        compute_covariance(point_file, dir_cov, dir_data)
+        compute_covariance(point_file, point_prefix, dir_cov, dir_data)
 
 
 
@@ -108,6 +111,9 @@ if __name__ == '__main__':
     )
     n_vars = multiply_list(sz_space)
 
+    # Multiprocessing settings
+    mp.set_start_method('spawn')
+
 
     # ---------- DATA SPLITTING ---------- #
     gen = torch.Generator().manual_seed(args.seed)
@@ -117,7 +123,7 @@ if __name__ == '__main__':
     # data via the flattened spatial indices. 
         
     print("Splitting data on time...")
-    data_loader = gen_tensors(dir_data, 'data-time-full')
+    data_loader = gen_tensors(dir_data, 'data-time_split-full_', sort_by=('i', int))
     i = 0
     for data in data_loader: 
         sz = len(data)
@@ -125,8 +131,8 @@ if __name__ == '__main__':
         idx = torch.randperm(sz, generator=gen)
         data_train = data[idx[:n_train]]
         data_valid = data[idx[n_train:]]
-        path_train = os.path.join(dir_data, f'data-time-train-{i}.pt')
-        path_valid = os.path.join(dir_data, f'data-time-valid-{i}.pt')
+        path_train = os.path.join(dir_data, f'data-time_split-train_i-{i}_.pt')
+        path_valid = os.path.join(dir_data, f'data-time_split-valid_i-{i}_.pt')
         torch.save(data_train, path_train)
         torch.save(data_valid, path_valid)
         i += 1
@@ -135,8 +141,8 @@ if __name__ == '__main__':
         print("Splitting indices on space...")
         idx = torch.randperm(n_vars, generator=gen)
         n_train = int(args.prop_train_space * n_vars)
-        path_train = os.path.join(dir_data, f'idx-space-train.pt')
-        path_valid = os.path.join(dir_data, f'idx-space-valid.pt')
+        path_train = os.path.join(dir_data, f'idx-space_split-train_.pt')
+        path_valid = os.path.join(dir_data, f'idx-space_split-valid_.pt')
         torch.save(idx[:n_train].sort().values, path_train)
         torch.save(idx[n_train:].sort().values, path_valid)
 
@@ -145,39 +151,44 @@ if __name__ == '__main__':
     print("Generating points...")
 
     n_vars = multiply_list(sz_space)
-    points_loader = gen_points(sz_space, args.delta, 10*n_vars)
-    n_batch = 0
-    for points in points_loader: 
-        path = os.path.join(dir_cov, f'points-{n_batch}.pt')
-        torch.save(points, path)
-        n_batch += 1
+    points_loaders = [gen_points(sz_space, args.delta, 10*n_vars)]
+    file_prefixes = ['points-offband']
+    if args.fse:
+        points_loaders += [gen_points(sz_space, args.delta, 10*n_vars, off_band=False)]
+        file_prefixes += ['points-onband']
+    for loader, prefix in zip(points_loaders, file_prefixes):
+        n_batch = 0
+        for points in loader: 
+            path = os.path.join(dir_cov, f'{prefix}_i-{n_batch}_.pt')
+            torch.save(points, path)
+            n_batch += 1
         
 
     # ---------- COVARIANCE COMPUTATION ---------- #
     print("Computing covariance...")
 
-    # Divide points files among workers
-    point_files = [f for f in os.listdir(dir_cov) if f.startswith('points')]
-    processes = []
-    remove_file(path_shared)
-    mp.set_start_method('spawn')
-    for rank in range(args.world_size):
-        p = mp.Process(
-            target=init_process,
-            args=(
-                rank, args.world_size, compute_covariance_for_point_files, 
-                path_shared, config.backend
-            ),
-            kwargs={
-                'point_files': point_files[slice(rank, len(point_files), args.world_size)],
-                'dir_cov': dir_cov,
-                'dir_data': dir_data,
-            }
-        )
-        p.start()
-        processes.append(p)
+    for prefix in file_prefixes:
+        processes = []
+        remove_file(path_shared)
+        point_files = [f for f in os.listdir(dir_cov) if f.startswith(prefix)]
+        for rank in range(args.world_size):
+            p = mp.Process(
+                target=init_process,
+                args=(
+                    rank, args.world_size, compute_covariance_for_point_files, 
+                    path_shared, config.backend
+                ),
+                kwargs={
+                    'point_files': point_files[slice(rank, len(point_files), args.world_size)],
+                    'point_prefix': prefix,
+                    'dir_cov': dir_cov,
+                    'dir_data': dir_data,
+                }
+            )
+            p.start()
+            processes.append(p)
 
-    for p in processes:
-        p.join()
+        for p in processes:
+            p.join()
 
     print("DONE!")

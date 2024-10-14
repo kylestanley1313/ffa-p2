@@ -48,54 +48,114 @@ def gen_range(n, batch_size, as_numpy=False):
 
 def write_generated_tensor(tensor_loader: Generator, dir: str, prefix: str):
     for i, batch in enumerate(tensor_loader):
-        path = os.path.join(dir, f'{prefix}-{i}.pt')
+        path = os.path.join(dir, f'{prefix}_i-{i}_.pt')
         torch.save(batch, path)
 
 
-def gen_tensors(dir: str, prefix: str, batch_size: Optional[int] = None) -> Generator:
-    files = sorted(os.listdir(dir))
+def get_field_from_fname(fname, field):
+    return fname.split(f'_{field}-')[1].split('_')[0]
+
+
+def gen_tensors(
+        dir: str, 
+        prefix: str, 
+        batch_size: Optional[int] = None, 
+        sort_by: Optional[Tuple[str, type]] = None
+    ) -> Generator:
+    """Generates batches of a tensor stored across multiple files.  
+
+    Args:
+        dir (str): Directory from which to read files.
+        prefix (str): File name prefix. 
+        batch_size (Optional[int], optional): Optionally load tensor in batches 
+            a certain size. Defaults to None.
+        sort_by (Optional[Tuple[str, type]], optional): Sort by a field `sort_by[0]`
+            having type `sort_by[1]`. Defaults to None.
+
+    Yields:
+        Generator: A generator that yields rows of the tensor. 
+    """
+    
+    # Get sorted list of files
+    files = [f for f in os.listdir(dir) if f.startswith(prefix) and f.endswith('.pt')]
+    if sort_by is not None: 
+        fields = [sort_by[1](get_field_from_fname(f, sort_by[0])) for f in files]
+        pairs = sorted(zip(files, fields), key=lambda x: x[1])
+        files, _ = zip(*pairs)
+        files = list(files)
+    else: 
+        files = sorted(files)
 
     if batch_size is None:  # each batch is a file
         for f in files:
-            if f.startswith(prefix) and f.endswith('.pt'):
-                yield torch.load(os.path.join(dir, f))
+            yield torch.load(os.path.join(dir, f))
 
     else: # each batch is of desired size
         leftover = None
         for f in files: 
-            if f.startswith(prefix) and f.endswith('.pt'):
-                array = torch.load(os.path.join(dir, f))
-                leftover = array if leftover is None else torch.cat((leftover, array))
-                while len(leftover) >= batch_size:
-                    yield leftover[:batch_size]
-                    leftover = leftover[batch_size:]
+            array = torch.load(os.path.join(dir, f))
+            leftover = array if leftover is None else torch.cat((leftover, array))
+            while len(leftover) >= batch_size:
+                yield leftover[:batch_size]
+                leftover = leftover[batch_size:]
         if leftover is not None and len(leftover) > 0: 
             yield leftover
                 
 
-def gen_arrays(dir: str, prefix: str, batch_size: Optional[int] = None) -> Generator:
-    files = sorted(os.listdir(dir))
+def gen_arrays(
+        dir: str, 
+        prefix: str, 
+        batch_size: Optional[int] = None, 
+        sort_by: Optional[Tuple[str, type]] = None
+    ) -> Generator:
+    """Generates batches of an array stored across multiple files.  
+
+    Args:
+        dir (str): Directory from which to read files.
+        prefix (str): File name prefix. 
+        batch_size (Optional[int], optional): Optionally load array in batches 
+            a certain size. Defaults to None.
+        sort_by (Optional[Tuple[str, type]], optional): Sort by a field `sort_by[0]`
+            having type `sort_by[1]`. Defaults to None.
+
+    Yields:
+        Generator: A generator that yields rows of the array. 
+    """
+
+    # Get sorted list of files
+    files = [f for f in os.listdir(dir) if f.startswith(prefix) and f.endswith('.npy')]
+    if sort_by is not None: 
+        fields = [sort_by[1](get_field_from_fname(f, sort_by[0])) for f in files]
+        pairs = sorted(zip(files, fields), key=lambda x: x[1])
+        files, _ = zip(*pairs)
+        files = list(files)
+    else: 
+        files = sorted(files)
 
     if batch_size is None:  # each batch is a file
         for f in files:
-            if f.startswith(prefix) and f.endswith('.npy'):
-                yield np.load(os.path.join(dir, f))
+            yield np.load(os.path.join(dir, f))
 
     else: # each batch is of desired size
         leftover = None
         for f in files: 
-            if f.startswith(prefix) and f.endswith('.npy'):
-                array = np.load(os.path.join(dir, f))
-                leftover = array if leftover is None else np.concatenate((leftover, array))
-                while len(leftover) >= batch_size:
-                    yield leftover[:batch_size]
-                    leftover = leftover[batch_size:]
+            array = np.load(os.path.join(dir, f))
+            leftover = array if leftover is None else np.concatenate((leftover, array))
+            while len(leftover) >= batch_size:
+                yield leftover[:batch_size]
+                leftover = leftover[batch_size:]
         if leftover is not None and len(leftover) > 0: 
             yield leftover
 
 
-def gen_tensors_as_arrays(dir: str, prefix: str, batch_size: int = None) -> Generator:
-    loader = gen_tensors(dir, prefix, batch_size)
+
+def gen_tensors_as_arrays(
+        dir: str, 
+        prefix: str, 
+        batch_size: Optional[int] = None, 
+        sort_by: Optional[Tuple[str, type]] = None
+    ) -> Generator:
+    loader = gen_tensors(dir, prefix, batch_size, sort_by)
     for tensor in loader: 
         yield tensor.numpy()
 
@@ -104,9 +164,14 @@ def get_generator(gen_fcn: Callable, *args, **kwargs) -> Generator:
     return gen_fcn(*args, **kwargs)
 
 
-def read_tensors(dir: str, prefix: str) -> torch.Tensor:
+def read_tensors(
+        dir: str, 
+        prefix: str, 
+        batch_size: Optional[int] = None, 
+        sort_by: Optional[Tuple[str, type]] = None
+    ) -> torch.Tensor:
     tensor_list = []
-    tensor_loader = gen_tensors(dir, prefix)
+    tensor_loader = gen_tensors(dir, prefix, batch_size, sort_by)
     for tensor in tensor_loader: 
         tensor_list.append(tensor)
     return torch.cat(tensor_list)
@@ -331,19 +396,24 @@ class ReshapingIndexMap(object):
             return out
         
 
-def procrustes_rotation(input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+def procrustes_rotation(input, target):
     """Supposing `input` and `target` are both K-by-T matrices, finds the 
     K-by-K rotation matrix `rot_mat` such that `rot_mat @ input` is close to 
-    `target`."""
+    `target`. Supports both torch.Tensor and numpy.ndarray as inputs."""
     
-    # Compute the cross-covariance matrix
-    cov = target @ input.T
+    # Check if the input is a NumPy array or a PyTorch tensor
+    if isinstance(input, np.ndarray) and isinstance(target, np.ndarray):
+        cov = target @ input.T
+        U, _, Vt = np.linalg.svd(cov)
+        rot_mat = U @ Vt
+        
+    elif isinstance(input, torch.Tensor) and isinstance(target, torch.Tensor):
+        cov = target @ input.T
+        U, _, Vt = torch.linalg.svd(cov)
+        rot_mat = U @ Vt
     
-    # Perform SVD on the cross-covariance matrix
-    U, _, Vt = torch.linalg.svd(cov)
-    
-    # Compute the rotation matrix
-    rot_mat = U @ Vt
+    else:
+        raise TypeError("Both input and target must be of the same type: either both NumPy arrays or both PyTorch tensors.")
     
     return rot_mat
 
@@ -365,8 +435,8 @@ def penalty_fcn_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
 
 
 def compute_loss(model, dir_cov, split):
-    points_loader = gen_tensors(dir_cov, 'points')
-    cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+    points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
+    cov_loader = gen_tensors(dir_cov, f'cov-offband_split-{split}', sort_by=('i', int))
     loss = 0
     for points, cov in zip(points_loader, cov_loader):
         preds = model(points)
@@ -573,7 +643,7 @@ def flatten_dataset(
     # Create the first flat view (temporal rows)
     i = 0
     n_time = 0
-    for data in gen_tensors(dir_dataset, 'data', bsz_time):
+    for data in gen_tensors(dir_dataset, 'data', bsz_time, ('i', int)):
 
         if i == 0: 
             sz_space = list(data.shape[1:])
@@ -581,7 +651,7 @@ def flatten_dataset(
 
         sz = len(data)
         data = data.reshape(sz, n_space)
-        path = os.path.join(dir_out, f'data-time-full-{i}.pt')
+        path = os.path.join(dir_out, f'data-time_split-full_i-{i}_.pt')
         torch.save(data, path)
 
         i += 1
@@ -595,11 +665,11 @@ def flatten_dataset(
         sz = min(bsz_space, n_space - start)
         batches = []
 
-        for batch in gen_tensors(dir_out, 'data-time-full', bsz_time):
+        for batch in gen_tensors(dir_out, 'data-time_split-full_', bsz_time, ('i', int)):
             batches.append(batch[:, start:(start + sz)])
         data = torch.cat(batches).t()
 
-        path = os.path.join(dir_out, f'data-space-full-{i}.pt')
+        path = os.path.join(dir_out, f'data-space_split-full_i-{i}_.pt')
         torch.save(data, path)
 
         i += 1
@@ -607,43 +677,24 @@ def flatten_dataset(
 
     return n_time, sz_space
 
-    
 
 
+# def batch_data_in_space(dir: str, split: str, batch_size: int) -> None:
+#     """Searches `dir` for `split` data files, then re-batches them in space."""
+#     n_space = next(gen_tensors(dir, f'data-{split}')).size(1)
+#     start = 0
+#     i = 0
+#     while start < n_space: 
+#         sz = min(batch_size, n_space - start)
 
+#         batch_list = []
+#         for data in gen_tensors(dir, f'data-{split}'): 
+#             batch_list.append(data[:, start:(start + sz)])
+#         batch = torch.cat(batch_list).t()
+#         torch.save(batch, os.path.join(dir, f'data-space-{split}-{i}.pt'))
 
-    for i in range(len(files)):
-        path_in = os.path.join(dir_dataset, files[i])
-        data = torch.load(path_in)
-        
-        # Get `sz_space` and `n_vars` from first data file
-        if i == 0:
-            sz_space = list(data.shape[1:])
-            n_vars = multiply_list(sz_space)
-        
-        data = data.reshape(len(data), n_vars)
-        path_out = os.path.join(dir_out, files[i])
-        torch.save(data, path_out)
-
-
-
-
-def batch_data_in_space(dir: str, split: str, batch_size: int) -> None:
-    """Searches `dir` for `split` data files, then re-batches them in space."""
-    n_space = next(gen_tensors(dir, f'data-{split}')).size(1)
-    start = 0
-    i = 0
-    while start < n_space: 
-        sz = min(batch_size, n_space - start)
-
-        batch_list = []
-        for data in gen_tensors(dir, f'data-{split}'): 
-            batch_list.append(data[:, start:(start + sz)])
-        batch = torch.cat(batch_list).t()
-        torch.save(batch, os.path.join(dir, f'data-space-{split}-{i}.pt'))
-
-        start += sz
-        i += 1
+#         start += sz
+#         i += 1
 
 
 

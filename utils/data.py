@@ -42,8 +42,8 @@ class CentralizedCovarianceDataset(Dataset):
     def __init__(self, dir_cov: str, dir_idx: str, split: str) -> None:
 
         idx = torch.load(os.path.join(dir_idx, f'idx.pt'))
-        points_loader = gen_tensors(dir_cov, 'points')
-        cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+        points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
+        cov_loader = gen_tensors(dir_cov, f'cov-offband_split-{split}', sort_by=('i', int))
         points_list = []
         cov_list = []
         start = 0
@@ -91,8 +91,8 @@ class DistributedCovarianceDataset(Dataset):
             
             if rank == r: 
                 
-                points_loader = gen_tensors(dir_cov, 'points')
-                cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+                points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
+                cov_loader = gen_tensors(dir_cov, f'cov-offband_split-{split}', sort_by=('i', int))
                 points_list = []
                 cov_list = []
                 start = 0
@@ -136,8 +136,8 @@ class DistributedStratifiedCovarianceDataset(Dataset):
         strat = torch.load(os.path.join(dir_idx, f'strat-{rank}.pt'))
         
         # Get points and covariance loaders
-        points_loader = gen_tensors(dir_cov, 'points')
-        cov_loader = gen_tensors(dir_cov, f'cov-{split}')
+        points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
+        cov_loader = gen_tensors(dir_cov, f'cov-offband_split-{split}', sort_by=('i', int))
 
         # Get this rank's points, strata, and covariance
         start = 0

@@ -7,16 +7,14 @@ import torch
 from abc import ABC, abstractmethod
 from functools import partial
 from scipy.interpolate import BSpline, splrep
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, List, Sequence, Tuple, Union
 
 from config import load_config
 from utils import (
-    l2_norm,
     multiply_list,
     refresh_directory, 
     reshape_sparse_coo_tensor,
     safe_l2_normalization, 
-    slice_sparse_coo_tensor,
     write_generated_tensor
 )
 
@@ -39,25 +37,6 @@ def basis_expansion(basis: Union[torch.Tensor], coeffs: torch.Tensor, ndim: int)
     else: 
         raise NotImplementedError 
     return (coeffs * basis).sum(dim=1).to_dense()
-
-
-# err_space = torch.tensor([
-#     [0, 0, 1, 1, 1, 0, 0, 0, 0, 0],
-#     [0, 0, 0, 0, 0, 1, 1, 1, 0, 0]
-# ]).to_sparse()
-# err_time = torch.tensor([
-#     [1, 2, 3],
-#     [3, 2, 1]
-# ])
-# print(f"err_space = \n{err_space}")
-# print(f"err_time = \n{err_time}")
-
-# out = basis_expansion(err_space, err_time.t(), 1)
-# print(f"out.shape = {out.shape}")
-# print(f"out = \n{out}")
-
-
-# exit(0)
     
 
 class SineFunction1D(object):
@@ -783,134 +762,6 @@ class TensorBasicFS(BasicFunctionSet):
     
 
 
-# ---------- Space-Time Function Sets ---------- #
-    
-# class SpaceTimeFunctionSet(ABC):
-
-#     def __init__(
-#             self, 
-#             width_space: float,
-#             n_time: int,
-#             kernel_length_time: float,
-#             gen: torch.Generator = None
-#         ) -> None:
-#         self.gen = gen
-#         self.width_space = width_space
-#         self.n_time = n_time
-#         self.kernel_length_time = kernel_length_time
-
-#         self.fset_space = self.get_space_fset()
-#         self.fset_time = self.get_time_fset()
-
-#         if self.fset_space.n_fcns != self.fset_time.n_fcns:
-#             raise Exception("Number of functions in spatial and temporal " 
-#                             "function sets must be equal!")
-        
-#         self.n_fcns = self.fset_space.n_fcns
-#         self.ndim = self.fset_space.ndim + 1
-        
-#     def __call__(self, eval_points: torch.Tensor) -> torch.Tensor: 
-
-#         if eval_points.size(1) != self.ndim:
-#             raise Exception("The number of columns in eval_points does not " 
-#                             "match the dimension of this SpaceTimeFunctionSet!")
-
-#         points_time = eval_points[:, 0]
-#         points_space = eval_points[:, 1:]
-
-#         # Remove empty dimension if points_space is m-by-1
-#         if points_space.size(1) == 1:
-#             points_space = points_space[:,0]
-
-#         return self.fset_time(points_time) * self.fset_space(points_space)
-
- 
-#     @abstractmethod
-#     def get_space_fset(self) -> BasicFunctionSet:
-#         pass
-
-#     @abstractmethod
-#     def get_time_fset(self) -> BasicFunctionSet:
-#         pass
-
-
-# class GaussProc_Bump1D_SpaceTimeFS(SpaceTimeFunctionSet):
-
-#     def get_space_fset(self) -> BasicFunctionSet:
-#         return Bump1DBasicFS(
-#             domain_range=[0, 1], 
-#             n_fcns=20, 
-#             width=self.width_space
-#         )
-    
-#     def get_time_fset(self) -> BasicFunctionSet:
-#         return GaussianProcessBasicFS(
-#             domain_range=[1, self.n_time],
-#             n_fcns=20,
-#             kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
-#             gen=gen
-#         )
-    
-
-# class GaussProc_BumpTensor2D_SpaceTimeFS(SpaceTimeFunctionSet):
-
-#     def get_space_fset(self) -> BasicFunctionSet:
-#         fset = Bump1DBasicFS(
-#             domain_range=[0, 1], 
-#             n_fcns=20, 
-#             width=self.width_space
-#         )
-#         return TensorBasicFS([fset, fset])
-
-#     def get_time_fset(self) -> BasicFunctionSet:
-#         return GaussianProcessBasicFS(
-#             domain_range=[1, self.n_time],
-#             n_fcns=400,
-#             kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
-#             gen=gen
-#         )
-    
-
-# class GaussProc_BSplinePinned1D_SpaceTimeFS(SpaceTimeFunctionSet):
-
-#     def get_space_fset(self) -> BasicFunctionSet:
-#         return BSplinePinned1DBasicFS(
-#             domain_range=[0, 1],
-#             n_fcns=20,
-#             width=self.width_space,
-#             gen=self.gen
-#         )
-
-#     def get_time_fset(self) -> BasicFunctionSet:
-#         return GaussianProcessBasicFS(
-#             domain_range=[1, self.n_time],
-#             n_fcns=20,
-#             kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
-#             gen=gen
-#         )
-    
-
-# class GaussProc_BSplinePinnedTensor2D_SpaceTimeFS(SpaceTimeFunctionSet):
-
-#     def get_space_fset(self) -> BasicFunctionSet:
-#         fset = BSplinePinned1DBasicFS(
-#             domain_range=[0, 1],
-#             n_fcns=20,
-#             width=self.width_space,
-#             gen=self.gen
-#         )
-#         return TensorBasicFS([fset, fset])
-
-#     def get_time_fset(self) -> BasicFunctionSet:
-#         return GaussianProcessBasicFS(
-#             domain_range=[1, self.n_time],
-#             n_fcns=400,
-#             kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
-#             gen=gen
-#         )
-
-
-
 # ---------- Error Schemes ---------- #
 # # NOTE: Error schemes are defined by a `fset`, and a range 
 # # (`scale_min`, `scale_mix`) from which to draw `n_fcns` scaling factors. 
@@ -1122,64 +973,6 @@ class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
         )
     
 
-
-    
-# class GaussProc_Bump1D_ErrorScheme(ErrorScheme):
-
-#     scale_min = 0.1
-#     scale_max = 1
-
-#     def get_fset(self, width_space, n_time, gen):
-#         return GaussProc_Bump1D_SpaceTimeFS(
-#             width_space=width_space,
-#             n_time=n_time,
-#             kernel_length_time=5,
-#             gen=gen
-#         )
-    
-
-# class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
-
-#     scale_min = 0.1
-#     scale_max = 1
-
-#     def get_fset(self, width_space, n_time, gen):
-#         return GaussProc_BumpTensor2D_SpaceTimeFS(
-#             width_space=width_space,
-#             n_time=n_time,
-#             kernel_length_time=5,
-#             gen=gen
-#         )
-    
-
-# class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
-
-#     scale_min = 0.1
-#     scale_max = 1
-
-#     def get_fset(self, width_space, n_time, gen):
-#         return GaussProc_BSplinePinned1D_SpaceTimeFS(
-#             width_space=width_space,
-#             n_time=n_time,
-#             kernel_length_time=5,
-#             gen=gen
-#         )
-    
-
-# class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
-
-    # scale_min = 0.1
-    # scale_max = 1
-
-    # def get_fset(self, width_space, n_time, gen):
-    #     return GaussProc_BSplinePinnedTensor2D_SpaceTimeFS(
-    #         width_space=width_space,
-    #         n_time=n_time,
-    #         kernel_length_time=5,
-    #         gen=gen
-    #     )
-    
-
 ERROR_SCHEMES = {
 
     # 1-dimensional
@@ -1279,7 +1072,16 @@ def simulate_ffm_data(
     # NOTE: By scaling each error function by a coefficient drawn from a 
     # zero-mean distribution with unit variance, we permit a simple closed 
     # form for the spatial error covariance which we use later. 
-    err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
+    # NOTE: I originally sampled these coefficients from a stanard normal 
+    # distribution. However, if coefficient j is near zero, then the 
+    # jth temporal error function will be a GP that stays near zero. Each voxel 
+    # is nonzero on very few of the J spatial error functions. If these nonzero
+    # spatial functions happen to be associated with one of the "small" 
+    # temporal error functions, then the local component will contribute
+    # very little to that voxel's observed time series. To avoid, this I
+    # instead sample from a mean-zero discrete distribution with unit variance. 
+    err_coeffs = torch.randint(0, 2, (n_err_fcns,), generator=gen) * 2 - 1
+    # err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
     errs_time = errs_time * err_coeffs.view(-1, 1)
 
     # Compute global and local l2 norms
@@ -1305,8 +1107,6 @@ def simulate_ffm_data(
         comp_local /= norm_local
         comp_local *= (1 - prop_global)
         yield comp_global + comp_local
-
-
 
 if __name__ == '__main__':
 
@@ -1381,7 +1181,7 @@ if __name__ == '__main__':
     config = load_config(args.config)
     gen = torch.Generator().manual_seed(args.seed)
     load_scheme = LOADING_SCHEMES[args.load_scheme](args.n_facs)
-    err_scheme = ERROR_SCHEMES[args.err_scheme](args.delta, args.n_time, 5, gen)
+    err_scheme = ERROR_SCHEMES[args.err_scheme](args.delta, args.n_time, 1, gen)
     sz = [args.n_time] + args.sz_space
 
     # Check for `load_scheme`, `err_scheme`, and `sz_space` compatibility
@@ -1461,13 +1261,6 @@ if __name__ == '__main__':
         errs_space = build_errors(indices_space, args.sz_space, vals_space)
         torch.save(errs_space, path_space)
         torch.save(errs_time, path_time)
-
-    # TODO: 
-    #   1. Test that everything up to this point works on small scale
-    #   2. Update simulate_ffm_data
-    #   3. Test large-scale
-
-    
 
 
     # ---------- DATA SIMULATION ---------- #

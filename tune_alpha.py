@@ -10,7 +10,6 @@ from utils import (
     execute_script, 
     model_from_loads,
 )
-from utils.model import LowRankCovariance
 
 
 ALPHAS = [0, 0.001, 0.01, 0.1, 1]

@@ -37,7 +37,8 @@ def estimate_factors_pls(
 def estimate_factors_pgls(
         get_data_loader: Callable, 
         loads: np.ndarray, 
-        get_inv_cov_error_loader: Callable
+        get_inv_cov_error_loader: Callable,
+        idx: np.ndarray
     ) -> np.ndarray:
     """Perform generalized least squares regression at each time t:
             F_hat = (L @ B_inv @ Lt)_inv @ L @ B_inv @ X
@@ -121,7 +122,6 @@ def estimate_factors_rbels(
     a_vec = temp @ h3_mat.flatten(order='F')
     a_mat = a_vec.reshape((n_facs, n_basis), order='F')
     return a_mat @ e_mat
-
 
 
 def estimate_factors_rbegls(
@@ -227,9 +227,10 @@ if __name__ == '__main__':
         get_inv_err_cov_loader = partial(
             get_generator,
             gen_fcn=gen_arrays,
-            dir=args.dir_out,
-            prefix='inv-err-cov_r1',
-            batch_size=args.batch_size
+            dir=os.path.join(args.dir_out, 'err-cov'),
+            prefix='inv-err-cov_reg-1',
+            batch_size=args.batch_size, 
+            sort_by=('i', int)
         )
 
     if args.regime == 2:
@@ -239,8 +240,9 @@ if __name__ == '__main__':
             get_generator,
             gen_fcn=gen_arrays,
             dir=os.path.join(args.dir_out, 'err-cov'),
-            prefix='inv-err-cov_r2',
-            batch_size=args.batch_size
+            prefix='inv-err-cov_reg-2',
+            batch_size=args.batch_size, 
+            sort_by=('i', int)
         )
 
     if args.regime == 3:
@@ -250,8 +252,9 @@ if __name__ == '__main__':
             get_generator,
             gen_fcn=gen_arrays,
             dir=os.path.join(args.dir_out, 'err-cov'),
-            prefix='inv-err-cov_r3',
-            batch_size=args.batch_size
+            prefix='inv-err-cov_reg-3',
+            batch_size=args.batch_size, 
+            sort_by=('i', int)
         )
 
     # Create dataloaders for full data and split indices
@@ -259,11 +262,12 @@ if __name__ == '__main__':
         get_generator,
         gen_fcn=gen_tensors_as_arrays,
         dir=dir_data,
-        prefix=f'data-space-full',
-        batch_size=args.batch_size
+        prefix=f'data-space_split-full',
+        batch_size=args.batch_size, 
+        sort_by=('i', int)
     )
     if args.split in ['train', 'valid']:
-        path = os.path.join(dir_data, f'idx-space-{args.split}.pt')
+        path = os.path.join(dir_data, f'idx-space_split-{args.split}_.pt')
         idx = torch.load(path).numpy()
     else: 
         idx = np.arange(loads.shape[1])
@@ -275,25 +279,25 @@ if __name__ == '__main__':
     if 'pls' in args.est_methods: 
         print("Estimating via PLS...")
         facs = estimate_factors_pls(get_data_loader, loads, idx)
-        path = os.path.join(args.dir_out, f'facs_{args.split}_r{args.regime}_pls.pt')
+        path = os.path.join(args.dir_out, f'facs_split-{args.split}_reg-{args.regime}_pls.pt')
         torch.save(torch.tensor(facs), path)
 
     if 'pgls' in args.est_methods: 
         print("Estimating via PGLS...")
-        facs = estimate_factors_pgls(get_data_loader, loads, get_inv_err_cov_loader)
-        path = os.path.join(args.dir_out, f'facs_{args.split}_r{args.regime}_pgls.pt')
+        facs = estimate_factors_pgls(get_data_loader, loads, get_inv_err_cov_loader, idx)
+        path = os.path.join(args.dir_out, f'facs_split-{args.split}_reg-{args.regime}_pgls.pt')
         torch.save(torch.tensor(facs), path)
 
     if 'rbels' in args.est_methods: 
         print("Estimating via RBELS...")
         facs = estimate_factors_rbels(get_data_loader, loads, idx, basis, args.gamma)
-        path = os.path.join(args.dir_out, f'facs_{args.split}_r{args.regime}_rbels.pt')
+        path = os.path.join(args.dir_out, f'facs_split-{args.split}_reg-{args.regime}_rbels.pt')
         torch.save(torch.tensor(facs), path)
 
     if 'rbegls' in args.est_methods: 
         print("Estimating via RBEGLS...")
         facs = estimate_factors_rbegls(get_data_loader, loads, get_inv_err_cov_loader, idx, basis, args.gamma)
-        path = os.path.join(args.dir_out, f'facs_{args.split}_r{args.regime}_rbegls.pt')
+        path = os.path.join(args.dir_out, f'facs_split-{args.split}_reg-{args.regime}_rbegls.pt')
         torch.save(torch.tensor(facs), path)
 
 

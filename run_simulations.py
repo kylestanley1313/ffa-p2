@@ -342,9 +342,9 @@ if __name__ == '__main__':
                         'split': 'full',
                         'sz_space': rep['sz_space'],
                         'est_method_loads': args.methods_le[0],  # only one LE method passed
-                        'delta_true': rep['delta'],
-                        'eval_cutoff': 0,  # TODO: Fine tune
-                        'phi': 0.0001,  # TODO: Fine tune
+                        'delta': rep['delta_est'],
+                        'eval_cutoff': 0 if regime == 1 else 0.5,  # TODO: Fine tune
+                        'phi': 0.001,  # TODO: Fine tune (0.000001 unstable when M = 40)
                         'batch_size': 100,  # batch inv err cov in space
                     }
                     code = execute_script(path, flags, raise_error)
@@ -376,6 +376,7 @@ if __name__ == '__main__':
                             'est_method_loads': args.methods_le[0],  # only one LE method passed
                             'regime': regime,
                             'batch_size': 100,  # batch data and inv err cov in space
+                            'skip_batching': None,  # This is okay for relatively small n_space
                         }
                         code = execute_script(path, flags, raise_error)
                         if code != 0:
@@ -406,13 +407,13 @@ if __name__ == '__main__':
                         'regime': regime,
                         'batch_size': 100,  # batch data and inv err cov in space
                     }
-                    if 'tune_gamma' not in steps:
-                        flags['gamma'] = 0
-                    else: 
-                        if method in ['rbels', 'rbegls']:
-                            flags['gamma'] = torch.load(
-                                os.path.join(rep['dir_out'], f'gamma-{method}-r{regime}.pt')
-                            ).item()
+                    if method in ['rbels', 'rbegls']:
+                        path_gamma = os.path.join(rep['dir_out'], f'gamma-{method}-r{regime}.pt')
+                        if os.path.exists(path_gamma):
+                            flags['gamma'] = torch.load(path_gamma).item()
+                        else: 
+                            print("No gamma file found!")
+                            flags['gamma'] = 0
 
                     code = execute_script(path, flags, raise_error)
                     if code != 0:

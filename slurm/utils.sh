@@ -24,6 +24,7 @@ build_run_simulations_cmd () {
     if [ ! -z "$REGIMES_FSE" ]; then
         CMD+=" --regimes_fse $REGIMES_FSE"
     fi
+    CMD+=" --benchmark"
 
     echo $CMD
 }

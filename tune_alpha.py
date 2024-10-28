@@ -12,7 +12,7 @@ from utils import (
 )
 
 
-ALPHAS = [0, 0.001, 0.01, 0.1, 1]
+ALPHAS = [0, 0.001, 0.01, 0.1, 1, 10]
 
 
 if __name__ == '__main__':

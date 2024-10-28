@@ -44,9 +44,9 @@ def compute_covariance(
         data_loader = gen_tensors(dir_data, f'data-time_split-{split}_', sort_by=('i', int))
         for data in data_loader: 
             n += len(data)
-            t1 = torch.sum(data[:,rows] * data[:,cols], dim=0)
-            t2 = torch.sum(data[:,rows], dim=0)
-            t3 = torch.sum(data[:,cols], dim=0)
+            t1 += torch.sum(data[:,rows] * data[:,cols], dim=0)
+            t2 += torch.sum(data[:,rows], dim=0)
+            t3 += torch.sum(data[:,cols], dim=0)
 
         cov = (t1 - t2 * t3 / n) / (n - 1)
 
@@ -151,10 +151,10 @@ if __name__ == '__main__':
     print("Generating points...")
 
     n_vars = multiply_list(sz_space)
-    points_loaders = [gen_points(sz_space, args.delta, 10*n_vars)]
+    points_loaders = [gen_points(sz_space, args.delta, 100*n_vars)] # TODO: 10 --> 100
     file_prefixes = ['points-offband']
     if args.fse:
-        points_loaders += [gen_points(sz_space, args.delta, 10*n_vars, off_band=False)]
+        points_loaders += [gen_points(sz_space, args.delta, 100*n_vars, off_band=False)]
         file_prefixes += ['points-onband']
     for loader, prefix in zip(points_loaders, file_prefixes):
         n_batch = 0

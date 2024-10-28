@@ -55,6 +55,7 @@ if __name__ == '__main__':
         choices=[1, 2, 3]
     )
     parser.add_argument('--benchmark', action='store_true')
+    parser.add_argument('--use_old_alphas', action='store_true')
     parser.add_argument('--silent_fail', action='store_true')
     args = parser.parse_args()
 
@@ -130,13 +131,16 @@ if __name__ == '__main__':
                 'dir_out': rep['dir_out'],
                 'n_time': rep['n_time'],
                 'sz_space': rep['sz_space'],
-                'factor_kernel_length': rep['factor_kernel_length'],
                 'load_scheme': rep['load_scheme'],
                 'err_scheme': rep['err_scheme'],
                 'n_facs': rep['n_facs'],
                 'delta': rep['delta'],
                 'prop_global': rep['prop_global'],
                 'batch_size': 100,
+                'kernel_length_fac': rep['kernel_length_fac'],
+                'kernel_length_fac_var': rep['kernel_length_fac_var'],
+                'kernel_length_err': rep['kernel_length_err'],
+                'kernel_length_err_var': rep['kernel_length_err_var'],
                 'seed': rep['seed'],
             }
             if not rep['id'].endswith('-0'):  # Read true loads and errs
@@ -159,7 +163,7 @@ if __name__ == '__main__':
                 'delta': rep['delta_est'],
                 'prop_train_time': 0.8,
                 'prop_train_space': 0.8,
-                'bsz_time': 500,
+                'bsz_time': 100,
                 'bsz_space': 1000,
                 'seed': rep['seed'],
             }
@@ -216,6 +220,11 @@ if __name__ == '__main__':
                 for rep in reps: 
                     print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
                     path = os.path.join(config.root, 'tune_alpha.py')
+
+                    path_alpha = os.path.join(rep['dir_out'], f'alpha-{method}.pt')
+                    if args.use_old_alphas and os.path.exists(path_alpha):
+                        print(f"Alpha already tuned... continuing.")
+                        continue
                     
                     flags = {
                         'config': args.config,

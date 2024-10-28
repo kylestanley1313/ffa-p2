@@ -7,7 +7,7 @@ import torch
 from abc import ABC, abstractmethod
 from functools import partial
 from scipy.interpolate import BSpline, splrep
-from typing import Callable, List, Sequence, Tuple, Union
+from typing import Callable, List, Optional, Sequence, Tuple, Union
 
 from config import load_config
 from utils import (
@@ -219,7 +219,7 @@ def simulate_gauss_procs(
         kernel: Callable, 
         gen: torch.Generator,
         gamma: float = 1e-5
-    ):
+    ) -> torch.Tensor:
 
     # Get covariance
     temp1, temp2 = torch.meshgrid(grid, grid, indexing='ij')
@@ -227,9 +227,29 @@ def simulate_gauss_procs(
     cov = kernel(dists)
 
     # Generate GPs    
+    #   C = LL^T --> cholesky
+    #   z ~ iid N(0, 1)
+    #   zL^T ~ N(0, C)
     l = torch.linalg.cholesky(cov + gamma * np.eye(len(grid)))
     z = torch.randn((n_procs, len(grid)), generator=gen, dtype=torch.float64)
     return z @ l.t()
+
+
+def scale_proc_vars(
+        procs: torch.Tensor, 
+        kernel: Callable, 
+        gen: torch.Generator
+    ) -> torch.Tensor:
+    # To scale a processes variance...
+    #   z ~ (0, C) --> input
+    #   v --> smooth positive mean-one real numbers
+    #   z * sqrt(v) ~ (0, DC_vD) --> D = diag(sqrt(v))
+    n_procs, n_time = procs.shape
+    grid = torch.arange(n_time) + 1
+    v = simulate_gauss_procs(grid, n_procs, kernel, gen) # for smooth variances
+    v = torch.exp(v) # for positive variances
+    v = v / v.mean(dim=1, keepdim=True) # for mean-one variances
+    return procs * torch.sqrt(v)
 
 
 
@@ -615,7 +635,8 @@ class GaussianProcessBasicFS(BasicFunctionSet):
             domain_range: List[float],  # NOTE: Can I use domain_range to infer the number of time points? A bit hacky...
             n_fcns: int,
             kernel: Callable,
-            gen: torch.Generator,
+            kernel_var: Optional[Callable] = None,
+            gen: torch.Generator = torch.Generator(),
             chol_pen: float = 1e-5
         ) -> None:
         super().__init__(domain_range=domain_range, n_fcns=n_fcns)
@@ -637,6 +658,8 @@ class GaussianProcessBasicFS(BasicFunctionSet):
             gen=gen,
             gamma=chol_pen
         )
+        if kernel_var is not None:
+            procs = scale_proc_vars(procs, kernel_var, gen)
 
         # Get B-spline basis functions
         self.procs = [None] * n_fcns
@@ -776,13 +799,21 @@ class ErrorScheme(ABC):
             self, 
             width_space: float,
             n_time: int,
-            kernel_length_time: float,
-            gen: torch.Generator
+            kernel_length: float,
+            kernel_length_var: Optional[float] = None,
+            gen: torch.Generator = torch.Generator()
         ) -> None:
         self.gen = gen
         self.width_space = width_space
         self.n_time = n_time
-        self.kernel_length_time = kernel_length_time
+        self.kernel = partial(squared_exponential_kernel, length=kernel_length)
+        if kernel_length_var is None: 
+            self.kernel_var = None
+        else: 
+            self.kernel_var = partial(
+                squared_exponential_kernel, 
+                length=kernel_length_var
+            )
 
         self.fset_space = self.get_fset_space()
         self.fset_time = self.get_fset_time()
@@ -856,18 +887,11 @@ class ErrorScheme(ABC):
         return vals_space, vals_time
 
     @abstractmethod
-    def get_fset_space(
-            self, 
-            width_space: float
-        ) -> BasicFunctionSet:
+    def get_fset_space(self) -> BasicFunctionSet:
         pass
 
     @abstractmethod
-    def get_fset_time(
-            self, 
-            kernel_length_time: float,
-            gen: torch.Generator
-        ) -> BasicFunctionSet:
+    def get_fset_time(self) -> BasicFunctionSet:
         pass
 
     @property
@@ -901,7 +925,8 @@ class GaussProc_Bump1D_ErrorScheme(ErrorScheme):
         return GaussianProcessBasicFS(
             domain_range=[1, self.n_time],
             n_fcns=20,
-            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            kernel=self.kernel,
+            kernel_var=self.kernel_var,
             gen=self.gen
         )
 
@@ -923,7 +948,8 @@ class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
         return GaussianProcessBasicFS(
             domain_range=[1, self.n_time],
             n_fcns=400,
-            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            kernel=self.kernel,
+            kernel_var=self.kernel_var,
             gen=self.gen
         )
 
@@ -945,7 +971,8 @@ class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
         return GaussianProcessBasicFS(
             domain_range=[1, self.n_time],
             n_fcns=20,
-            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            kernel=self.kernel,
+            kernel_var=self.kernel_var,
             gen=self.gen
         )
 
@@ -968,7 +995,8 @@ class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
         return GaussianProcessBasicFS(
             domain_range=[1, self.n_time],
             n_fcns=400,
-            kernel=partial(squared_exponential_kernel, length=self.kernel_length_time),
+            kernel=self.kernel,
+            kernel_var=self.kernel_var,
             gen=self.gen
         )
     
@@ -979,7 +1007,7 @@ ERROR_SCHEMES = {
     'GaussProc_Bump1D': GaussProc_Bump1D_ErrorScheme,
     'GaussProc_BSplinePinned1D': GaussProc_BSplinePinned1D_ErrorScheme,
 
-    # 1-dimensional
+    # 2-dimensional
     'GaussProc_BumpTensor2D': GaussProc_BumpTensor2D_ErrorScheme,
     'GaussProc_BSplinePinnedTensor2D': GaussProc_BSplinePinnedTensor2D_ErrorScheme,
 
@@ -1140,10 +1168,6 @@ if __name__ == '__main__':
         help="Shape of the spatial grid on which to simulate data."
     )
     parser.add_argument(
-        '--factor_kernel_length', type=int,
-        help="Kernel to use when simulating factors from MVN."
-    )
-    parser.add_argument(
         '--load_scheme', type=str,
         help="Loading scheme used to simulate data."
     )
@@ -1164,6 +1188,22 @@ if __name__ == '__main__':
         help="Proportion of observations coming from global component."
     )
     parser.add_argument(
+        '--kernel_length_fac', type=float,
+        help="Kernel length for factors over time."
+    )
+    parser.add_argument(
+        '--kernel_length_fac_var', type=float,
+        help="Kernel length for factor variances over time. None for constant variance"
+    )
+    parser.add_argument(
+        '--kernel_length_err', type=float,
+        help="Kernel length for errors over time."
+    )
+    parser.add_argument(
+        '--kernel_length_err_var', type=float,
+        help="Kernel length for error variances over time. None for constant variance"
+    )
+    parser.add_argument(
         '--batch_size', type=int, 
         help="Maximumum number of time points to include in each file."
     )
@@ -1181,7 +1221,13 @@ if __name__ == '__main__':
     config = load_config(args.config)
     gen = torch.Generator().manual_seed(args.seed)
     load_scheme = LOADING_SCHEMES[args.load_scheme](args.n_facs)
-    err_scheme = ERROR_SCHEMES[args.err_scheme](args.delta, args.n_time, 1, gen)
+    err_scheme = ERROR_SCHEMES[args.err_scheme](
+        width_space=args.delta, 
+        n_time=args.n_time, 
+        kernel_length=args.kernel_length_err,
+        kernel_length_var=args.kernel_length_err_var,
+        gen=gen
+    )
     sz = [args.n_time] + args.sz_space
 
     # Check for `load_scheme`, `err_scheme`, and `sz_space` compatibility
@@ -1243,8 +1289,12 @@ if __name__ == '__main__':
 
     # Build factor tensor
     print("Preparing factors...")
-    kernel = partial(squared_exponential_kernel, length=args.factor_kernel_length)
-    facs = simulate_gauss_procs(points_time, args.n_facs, kernel, gen).t()  # n_time-by-n_facs
+    kernel = partial(squared_exponential_kernel, length=args.kernel_length_fac)
+    facs = simulate_gauss_procs(points_time, args.n_facs, kernel, gen)
+    if args.kernel_length_fac_var is not None:
+        kernel_var = partial(squared_exponential_kernel, length=args.kernel_length_fac_var)
+        facs = scale_proc_vars(facs, kernel_var, gen)
+    facs = facs.t() # n_time-by-n_facs
     torch.save(facs, os.path.join(args.dir_out, 'facs.pt'))
 
     # Build error tensor, then scale error tensor by coefficients
@@ -1302,4 +1352,3 @@ if __name__ == '__main__':
     )
 
     print("DONE!")
- 

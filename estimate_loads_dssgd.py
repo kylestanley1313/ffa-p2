@@ -18,7 +18,6 @@ from utils import (
     gen_seeds, 
     init_process,
     loss_fcn,
-    multiply_list,
     remove_file,
     write_rows_to_csv,
 )
@@ -147,7 +146,7 @@ def train(
         dir_out: str,
         dir_out_scratch: str,
         split: str,
-        sz_space: List[int], 
+        n_vars: int, 
         n_facs: int, 
         batch_size: int,
         lr: float, 
@@ -171,7 +170,6 @@ def train(
     batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
     dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
 
-    n_vars = multiply_list(sz_space)
     path_init = os.path.join(dir_out, f'init-loads-{split}.pt')
     model = LowRankCovariance(n_vars, n_facs, path_init)
     broadcast_model(model, rank, 0)
@@ -286,7 +284,7 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
-    parser.add_argument('--sz_space', type=int, nargs='+')
+    parser.add_argument('--n_vars', type=int)
     parser.add_argument('--n_facs', type=int)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--lr', type=float)
@@ -333,7 +331,7 @@ if __name__ == '__main__':
                 'dir_out': args.dir_out,
                 'dir_out_scratch': args.dir_out_scratch,
                 'split': args.split,
-                'sz_space': args.sz_space,
+                'n_vars': args.n_vars,
                 'n_facs': args.n_facs,
                 'batch_size': args.batch_size,
                 'lr': args.lr,

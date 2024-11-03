@@ -9,7 +9,6 @@ from functools import partial
 from torch.nn.parallel import DistributedDataParallel as DDP
 from typing import List, Tuple
 
-from utils.benchmarking import size_dist_obj, time_dist_fcn
 from config import load_config
 from utils.data import (
     BasicDataLoader,
@@ -19,7 +18,6 @@ from utils.data import (
 from utils.model import LowRankCovariance
 from utils import (
     CODE_DIVERGENCE,
-    CODE_NO_CONVERGENCE,
     create_second_difference_matrix, 
     gen_seeds, 
     init_process,
@@ -237,6 +235,7 @@ if __name__ == '__main__':
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
     parser.add_argument('--sz_space', type=int, nargs='+')
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--n_facs', type=int)
     parser.add_argument('--alpha', type=float, default=0)
     parser.add_argument('--batch_size', type=int)
@@ -247,6 +246,10 @@ if __name__ == '__main__':
     parser.add_argument('--benchmark', action='store_true')
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
+
+    # TODO: Add mask handling
+    if args.path_mask is not None: 
+        raise Exception("Script cannot handle mask yet!")
     
     config = load_config(args.config)
 
@@ -259,7 +262,7 @@ if __name__ == '__main__':
     other_bench_path = os.path.join(dir_bench, 'other-dsgd.csv')
     suffix = args.dir_out.split('out/')[-1].replace('/', '_')
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
-    
+
     # Seeding
     gen = torch.Generator().manual_seed(args.seed)
     seeds = gen_seeds(gen, args.world_size)

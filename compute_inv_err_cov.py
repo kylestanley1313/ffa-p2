@@ -9,8 +9,8 @@ from typing import Generator, Tuple
 
 from config import load_config
 from utils import (
-    gen_tensors,
-    multiply_list,
+    FlatMaskIndexMap,
+    gen_tensors
 )
 
 
@@ -178,7 +178,7 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--regime', type=int, choices=[1, 2, 3])
     parser.add_argument('--split', type=str)
-    parser.add_argument('--sz_space', nargs='+', type=int)
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--est_method_loads', type=str, choices=['lbfgs', 'dsgd', 'dssgd'])
     parser.add_argument('--delta', type=float)
     parser.add_argument('--eval_cutoff', type=float)
@@ -187,8 +187,6 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     config = load_config(args.config)
-    n_vars = multiply_list(args.sz_space)
-    ndim_space = len(args.sz_space)
 
     # Validate arguments
     if args.regime == 2: # invert C_hat - L*Lt 
@@ -204,7 +202,23 @@ if __name__ == '__main__':
         # Read in spatial and temporal function sets
         err_space = torch.load(os.path.join(args.dir_out, 'errs-space.pt'))  # (J, S)
         err_time = torch.load(os.path.join(args.dir_out, 'errs-time.pt'))  # (J, T)
-        n_fcns, n_space = err_space.shape
+        
+        # Optionally mask spatial error functions
+        n_fcns = err_space.shape[0]
+        if args.path_mask is not None: 
+            mask = torch.flatten(torch.load(args.path_mask))
+            idx_map = FlatMaskIndexMap(mask) # for mapping unmasked indices to masked ones
+            indices = err_space.coalesce().indices()
+            values = err_space.coalesce().values()
+            keep = mask[indices[1]]
+            indices = indices[:,keep]
+            indices[1] = idx_map(indices[1])
+            values = values[keep]
+            err_space = torch.sparse_coo_tensor(
+                indices, values, 
+                size=(n_fcns, torch.sum(mask))
+            )
+        n_space = err_space.shape[1]
 
         # Build error covariance one space-time function at a time
         # NOTE: c(s1, s2) = (1/n_time) sum_t sum_j e_j(s1, t) e_j(s2, t)
@@ -277,7 +291,7 @@ if __name__ == '__main__':
         col_idx = np.concatenate(col_idx_list)
         init_err_cov = scipy.sparse.csr_matrix(
             (data, (row_idx, col_idx)),
-            shape=(n_vars, n_vars)
+            shape=(loads.shape[0], loads.shape[0])
         )
 
         # Estimate low-rank error covariance    

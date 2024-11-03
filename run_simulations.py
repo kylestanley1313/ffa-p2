@@ -7,6 +7,7 @@ from config import load_config
 from utils import (
     execute_script, 
     load_yaml, 
+    multiply_list
 )
 
 
@@ -113,6 +114,14 @@ if __name__ == '__main__':
     reps = []
     for path in get_all_rep_paths(config, args.design):
         rep = load_yaml(path)
+
+        # Set n_vars
+        path_mask = rep.get('path_mask')
+        if path_mask is None: 
+            rep['n_vars'] = multiply_list([int(d) for d in rep['sz_space']])
+        else: 
+            rep['n_vars'] = torch.nonzero(torch.load(path_mask)).shape[0]
+
         rep['id'] = (path.split('designs/')[-1]
                      .replace('.yml', '')
                      .replace('/', '_'))
@@ -167,6 +176,8 @@ if __name__ == '__main__':
                 'bsz_space': 1000,
                 'seed': rep['seed'],
             }
+            if rep.get('path_mask') is not None: 
+                flags['path_mask'] = rep['path_mask']
             if args.methods_fse is not None: 
                 flags['fse'] = None
             execute_script(path, flags, raise_error)
@@ -202,7 +213,6 @@ if __name__ == '__main__':
                     'dir_out': rep['dir_out'],
                     'dir_out_scratch': rep['dir_out_scratch'],
                     'split': split,
-                    'sz_space': rep['sz_space'],
                     'n_facs': rep['n_facs'],
                     'init_method': 'pca_randomized',
                     'prop_init': 1.0,
@@ -234,12 +244,14 @@ if __name__ == '__main__':
                         'sz_space': rep['sz_space'],
                         'n_facs': rep['n_facs'],
                     }
+                    if rep.get('path_mask') is not None: 
+                        flags['path_mask'] = rep['path_mask']
 
                     if method == 'lbfgs':
                         flags = flags | {
                             'lr': 1.0,
                             'history_size': 10,
-                            'tol': 1e-6,
+                            'tol': 1e-7, #1e-6,
                             'patience': 5,
                             'max_epochs': 1000,
                         }
@@ -249,7 +261,7 @@ if __name__ == '__main__':
                             'world_size': rep['world_size_est'],
                             'batch_size': 1024,
                             'lr': 4.0,
-                            'tol': 1e-6,
+                            'tol': 1e-7, #1e-6,
                             'patience': 5,
                             'max_epochs': 1000,
                             'seed': rep['seed']
@@ -280,7 +292,6 @@ if __name__ == '__main__':
                     'dir_out': rep['dir_out'],
                     'dir_out_scratch': rep['dir_out_scratch'],
                     'split': 'full',
-                    'sz_space': rep['sz_space'],
                     'n_facs': rep['n_facs'],
                 }
 
@@ -294,30 +305,37 @@ if __name__ == '__main__':
 
                 if method == 'lbfgs':
                     flags = flags | {
+                        'sz_space': rep['sz_space'],
                         'lr': 1.0,
                         'history_size': 10,
-                        'tol': 1e-6,
+                        'tol': 1e-7, #1e-6,
                         'patience': 5,
                         'max_epochs': 1000,
                     }
+                    if rep.get('path_mask') is not None: 
+                        flags['path_mask'] = rep['path_mask']
 
                 if method == 'dsgd':
                     flags = flags | {
+                        'sz_space': rep['sz_space'],
                         'world_size': rep['world_size_est'],
                         'batch_size': 1024,
                         'lr': 4.0,
-                        'tol': 1e-6,
+                        'tol': 1e-7, #1e-6,
                         'patience': 5,
                         'max_epochs': 1000,
                         'seed': rep['seed']
                     }
+                    if rep.get('path_mask') is not None: 
+                        flags['path_mask'] = rep['path_mask']
 
                 if method == 'dssgd':
                     flags = flags | {
+                        'n_vars': rep['n_vars'],
                         'world_size': rep['world_size_est'],
                         'batch_size': 4096,
                         'lr': 16.0,
-                        'tol': 1e-6,
+                        'tol': 1e-7, #1e-6,
                         'patience': 5,
                         'max_epochs': 1000,
                         'seed': rep['seed']
@@ -349,13 +367,14 @@ if __name__ == '__main__':
                         'dir_out_scratch': rep['dir_out_scratch'],
                         'regime': regime,
                         'split': 'full',
-                        'sz_space': rep['sz_space'],
                         'est_method_loads': args.methods_le[0],  # only one LE method passed
                         'delta': rep['delta_est'],
-                        'eval_cutoff': 0 if regime == 1 else 0.5,  # TODO: Fine tune
+                        'eval_cutoff': 0 if regime == 1 else 0.5,  # le-err = 0.5, le-bench = 3.0(?)
                         'phi': 0.001,  # TODO: Fine tune (0.000001 unstable when M = 40)
                         'batch_size': 100,  # batch inv err cov in space
                     }
+                    if rep.get('path_mask') is not None: 
+                        flags['path_mask'] = rep['path_mask']
                     code = execute_script(path, flags, raise_error)
                     if code != 0:
                         if code in errors: 
@@ -387,6 +406,8 @@ if __name__ == '__main__':
                             'batch_size': 100,  # batch data and inv err cov in space
                             'skip_batching': None,  # This is okay for relatively small n_space
                         }
+                        if rep.get('path_mask'):
+                            flags['path_mask'] = rep['path_mask']
                         code = execute_script(path, flags, raise_error)
                         if code != 0:
                             if code in errors: 
@@ -416,6 +437,8 @@ if __name__ == '__main__':
                         'regime': regime,
                         'batch_size': 100,  # batch data and inv err cov in space
                     }
+                    if rep.get('path_mask'):
+                        flags['path_mask'] = rep['path_mask']
                     if method in ['rbels', 'rbegls']:
                         path_gamma = os.path.join(rep['dir_out'], f'gamma-{method}-r{regime}.pt')
                         if os.path.exists(path_gamma):

@@ -8,7 +8,6 @@ from typing import Generator
 from config import load_config
 from utils import (
     gen_seeds,
-    multiply_list,
     gen_tensors,
 )
 
@@ -21,7 +20,7 @@ class PCALoadingInitializer(object):
             method: str, 
             num_facs: int, 
             init_prop: float, 
-            generator: torch.Generator
+            generator: torch.Generator = torch.Generator()
         ) -> None:
         self.method = method
         self.num_facs = num_facs
@@ -37,8 +36,7 @@ class PCALoadingInitializer(object):
             n_batch = len(batch)
             num_to_keep = int(n_batch * self.init_prop)
             idx = torch.randperm(n_batch, generator=self.gen)
-            data_ = batch[idx[:num_to_keep]]
-            data.append(data_)
+            data.append(batch[idx[:num_to_keep]])
             n += num_to_keep
         data = torch.cat(data)
 
@@ -57,7 +55,6 @@ class PCALoadingInitializer(object):
         loads = torch.tensor(loads, dtype=torch.float64)
 
         return loads.t().contiguous()
-    
 
 
 if __name__ == '__main__':
@@ -67,7 +64,6 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
-    parser.add_argument('--sz_space', type=int, nargs='+')
     parser.add_argument('--n_facs', type=int)
     parser.add_argument(
         '--init_method', type=str, 
@@ -92,7 +88,8 @@ if __name__ == '__main__':
         'pca_randomized': 'randomized'
     }
     if args.init_method == 'random':
-        n_vars = multiply_list(args.sz_space)
+        path = os.path.join(args.dir_out_scratch, 'data', 'data-time_split-full_i-0_.pt')
+        n_vars = torch.load(path).shape[1]
         loads = torch.randn(n_vars, args.n_facs, generator=gen, dtype=torch.float64)
     else:
         dataloader = gen_tensors(
@@ -104,7 +101,7 @@ if __name__ == '__main__':
             pca_svd_solvers[args.init_method], 
             args.n_facs, 
             args.prop_init, 
-            gen
+            generator=gen
         )
         loads = initializer(dataloader)
     torch.save(loads, path_init)

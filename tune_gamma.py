@@ -124,6 +124,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_time', type=int)
     parser.add_argument('--est_method_loads', type=str)
     parser.add_argument('--regime', type=int, choices=[1, 2, 3])
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--skip_batching', action='store_true')
     args = parser.parse_args()
@@ -140,6 +141,9 @@ if __name__ == '__main__':
     if args.regime in [1, 2]: 
         path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path).numpy()
+        if args.path_mask is not None: 
+            mask = torch.flatten(torch.load(args.path_mask)).numpy()
+            loads = loads[:,mask]
     else: 
         path = os.path.join(args.dir_out, f'model-{args.est_method_loads}-full.pth')
         loads = torch.load(path)['loads'].t().numpy()
@@ -179,6 +183,8 @@ if __name__ == '__main__':
         'regime': args.regime,
         'batch_size': args.batch_size 
     }
+    if args.path_mask is not None:
+        flags['path_mask'] = args.path_mask
 
     # Estimate model for various gammas
     results = pd.DataFrame(columns=['gamma', 'valid_loss'])

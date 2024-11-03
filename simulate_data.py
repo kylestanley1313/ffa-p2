@@ -952,6 +952,29 @@ class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
             kernel_var=self.kernel_var,
             gen=self.gen
         )
+    
+
+class GaussProc_BumpTensor3D_ErrorScheme(ErrorScheme):
+
+    scale_min = 0.1
+    scale_max = 1
+
+    def get_fset_space(self):
+        fset = Bump1DBasicFS(
+            domain_range=[0, 1], 
+            n_fcns=20, 
+            width=self.width_space
+        )
+        return TensorBasicFS([fset, fset, fset])
+
+    def get_fset_time(self):
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=8000,
+            kernel=self.kernel,
+            kernel_var=self.kernel_var,
+            gen=self.gen
+        )
 
 
 class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
@@ -1001,6 +1024,30 @@ class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
         )
     
 
+class GaussProc_BSplinePinnedTensor3D_ErrorScheme(ErrorScheme):
+
+    scale_min = 0.1
+    scale_max = 1
+
+    def get_fset_space(self):
+        fset = BSplinePinned1DBasicFS(
+            domain_range=[0, 1],
+            n_fcns=20,
+            width=self.width_space,
+            gen=self.gen
+        )
+        return TensorBasicFS([fset, fset, fset])
+
+    def get_fset_time(self):
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=8000,
+            kernel=self.kernel,
+            kernel_var=self.kernel_var,
+            gen=self.gen
+        )
+    
+
 ERROR_SCHEMES = {
 
     # 1-dimensional
@@ -1010,6 +1057,10 @@ ERROR_SCHEMES = {
     # 2-dimensional
     'GaussProc_BumpTensor2D': GaussProc_BumpTensor2D_ErrorScheme,
     'GaussProc_BSplinePinnedTensor2D': GaussProc_BSplinePinnedTensor2D_ErrorScheme,
+
+    # 3-dimensional
+    'GaussProc_BumpTensor3D': GaussProc_BumpTensor3D_ErrorScheme,
+    'GaussProc_BSplinePinnedTensor3D': GaussProc_BSplinePinnedTensor3D_ErrorScheme,
 
 }
  

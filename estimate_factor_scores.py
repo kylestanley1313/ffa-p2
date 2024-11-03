@@ -208,6 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--split', type=str)
     parser.add_argument('--est_method_loads', type=str)
     parser.add_argument('--regime', type=int, choices=[1, 2, 3])
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--batch_size', type=int)
     args = parser.parse_args()
 
@@ -224,6 +225,9 @@ if __name__ == '__main__':
     if args.regime == 1:
         path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path).numpy()
+        if args.path_mask is not None: 
+            mask = torch.flatten(torch.load(args.path_mask)).numpy()
+            loads = loads[:,mask]
         get_inv_err_cov_loader = partial(
             get_generator,
             gen_fcn=gen_arrays,
@@ -236,6 +240,9 @@ if __name__ == '__main__':
     if args.regime == 2:
         path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path).numpy()
+        if args.path_mask is not None: 
+            mask = torch.flatten(torch.load(args.path_mask)).numpy()
+            loads = loads[:,mask]
         get_inv_err_cov_loader = partial(
             get_generator,
             gen_fcn=gen_arrays,

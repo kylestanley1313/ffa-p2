@@ -2,6 +2,7 @@ import csv
 import math
 import numpy as np
 import os
+import pandas as pd
 import shutil
 import subprocess
 import sys
@@ -395,6 +396,23 @@ class ReshapingIndexMap(object):
         else:
             return out
         
+        
+class FlatMaskIndexMap(object):
+
+    def __init__(self, mask: torch.Tensor) -> None:
+        mask = torch.flatten(mask)
+        idx_unmask = torch.arange(multiply_list(mask.shape))[mask]
+        idx_mask = torch.arange(len(idx_unmask))
+        self.idx_map = pd.DataFrame(
+            torch.stack((idx_unmask, idx_mask), dim=0).t().numpy(),
+            columns=['key', 'value']
+        )
+
+    def __call__(self, idx_unmask: torch.Tensor) -> torch.Tensor:
+        idx_unmask = pd.DataFrame(idx_unmask.numpy(), columns=['key'])
+        idx_mask = pd.merge(idx_unmask, self.idx_map, on='key', how='left')
+        return torch.tensor(idx_mask['value'].values)
+        
 
 def procrustes_rotation(input, target):
     """Supposing `input` and `target` are both K-by-T matrices, finds the 
@@ -604,34 +622,12 @@ def create_second_difference_matrix(grid_shape):
 
 # -------------------- DATA PREP -------------------- #
 
-# def flatten_dataset(dir_in: str, dir_out: str) -> List[int]:
-#     """Reads a potentially unflattened dataset from `dir_in`, flattens it, 
-#     then writes the result to `dir_out`."""
-#     files = [
-#         f for f in os.listdir(dir_in) 
-#         if f.startswith('data') and f.endswith('.pt')
-#     ]
-#     for i in range(len(files)):
-#         path_in = os.path.join(dir_in, files[i])
-#         data = torch.load(path_in)
-        
-#         # Get `sz_space` and `n_vars` from first data file
-#         if i == 0:
-#             sz_space = list(data.shape[1:])
-#             n_vars = multiply_list(sz_space)
-        
-#         data = data.reshape(len(data), n_vars)
-#         path_out = os.path.join(dir_out, files[i])
-#         torch.save(data, path_out)
-
-#     return sz_space
-
-
 def flatten_dataset(
         dir_dataset: str, 
         dir_out: str, 
         bsz_time: int, 
-        bsz_space: int
+        bsz_space: int,
+        path_mask: Optional[str]
     ) -> Tuple[int, List[int]]: 
     """Creates two flat views (batched by row) of the dataset represented by
     tensors of shape (T, M_1, ..., M_D) in `dir_dataset`: 
@@ -640,6 +636,9 @@ def flatten_dataset(
     Finally, returns `n_time` and `sz_space`.
     """
 
+    # Optionally load mask
+    mask = None if path_mask is None else torch.flatten(torch.load(path_mask))
+
     # Create the first flat view (temporal rows)
     i = 0
     n_time = 0
@@ -647,10 +646,17 @@ def flatten_dataset(
 
         if i == 0: 
             sz_space = list(data.shape[1:])
-            n_space = multiply_list(sz_space)
+            if mask is None: 
+                n_space = multiply_list(sz_space)
+            else: 
+                n_space = torch.sum(mask).item()
 
         sz = len(data)
-        data = data.reshape(sz, n_space)
+        data = data.reshape(sz, multiply_list(sz_space))
+
+        if mask is not None: 
+            data = data[:,mask]
+
         path = os.path.join(dir_out, f'data-time_split-full_i-{i}_.pt')
         torch.save(data, path)
 
@@ -679,27 +685,6 @@ def flatten_dataset(
 
 
 
-# def batch_data_in_space(dir: str, split: str, batch_size: int) -> None:
-#     """Searches `dir` for `split` data files, then re-batches them in space."""
-#     n_space = next(gen_tensors(dir, f'data-{split}')).size(1)
-#     start = 0
-#     i = 0
-#     while start < n_space: 
-#         sz = min(batch_size, n_space - start)
-
-#         batch_list = []
-#         for data in gen_tensors(dir, f'data-{split}'): 
-#             batch_list.append(data[:, start:(start + sz)])
-#         batch = torch.cat(batch_list).t()
-#         torch.save(batch, os.path.join(dir, f'data-space-{split}-{i}.pt'))
-
-#         start += sz
-#         i += 1
-
-
-
-
-
 # -------------------- TRAINING POINTS -------------------- #
 
 def gen_cartesian_prod(input: torch.Tensor) -> Generator:
@@ -720,21 +705,41 @@ def gen_points(
         batch_size: int,
         off_band: bool = True,
         exclude_upp_tri: bool = True,
-        as_numpy: bool = False
+        as_numpy: bool = False,
+        path_mask: Optional[str] = None
     ) -> Generator:
     """Yields square matricized training points for a grid_shape-by-grid_shape 
     covariance tensor in batches."""
 
     ndim = len(grid_shape)
-    n_vars = multiply_list(grid_shape)
 
-    if batch_size < n_vars: 
-        raise Exception("Must have batch_size >= n_vars")
+    # Batch size check
+    if path_mask is None: 
+        min_bsz = multiply_list(grid_shape)
+    else: 
+        min_bsz = torch.nonzero(torch.load(path_mask)).shape[0]
+    if batch_size < min_bsz: 
+        raise Exception(f"Must have batch_size >= {min_bsz}")
 
+    # Get (optionally masked) spatial indices and bandwidths
     indices = get_indices_from_grid_shape(grid_shape)
+    if path_mask is not None:
+
+        # Get map from flattened unmasked indices to flattened masked indices
+        mask = torch.load(path_mask)
+        idx_map_mask = FlatMaskIndexMap(mask)
+        
+        # Mask indices
+        nz_idx = torch.nonzero(mask)
+        mask = (indices.unsqueeze(1) == nz_idx).all(-1).any(1)
+        indices = indices[mask]
+    
     bandwidths = torch.tensor([math.ceil(grid_shape[d]*delta) for d in range(ndim)])
 
-    idx_map = ReshapingIndexMap(grid_shape + grid_shape, [n_vars, n_vars])
+    idx_map = ReshapingIndexMap(
+        old_shape=grid_shape + grid_shape, 
+        new_shape=[multiply_list(grid_shape), multiply_list(grid_shape)]
+    )
     start_new_batch = True
     leftovers = None
     for cp_batch in gen_cartesian_prod(indices): 
@@ -757,14 +762,23 @@ def gen_points(
             keep = torch.all(dists <= bandwidths, dim=1)
             
         # Keep only the points in the lower triangle
-        cp_batch = idx_map.seq_map(cp_batch[keep])  # square matricize indices
-        if exclude_upp_tri:
-            keep = cp_batch[:,0] >= cp_batch[:,1]
-            cp_batch = cp_batch[keep]
-        
+        if torch.sum(keep) > 0:
+            cp_batch = idx_map.seq_map(cp_batch[keep])  # square matricize indices
+            if exclude_upp_tri:
+                keep = cp_batch[:,0] >= cp_batch[:,1]
+                cp_batch = cp_batch[keep]
+        else:
+            continue
+
+        # Continue if all points filtered from batch
         num_to_keep = cp_batch.size(0)
         if num_to_keep == 0:
             continue
+
+        # Convert to masked indices
+        if path_mask is not None: 
+            cp_batch[:,0] = idx_map_mask(cp_batch[:,0])
+            cp_batch[:,1] = idx_map_mask(cp_batch[:,1])
 
         num_to_inc = min(num_to_keep, batch_size - start_idx)
         num_to_exc = max(0, num_to_keep - num_to_inc)

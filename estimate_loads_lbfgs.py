@@ -12,7 +12,6 @@ from utils import (
     CODE_DIVERGENCE,
     create_second_difference_matrix,
     loss_fcn,
-    multiply_list,
     penalty_fcn,
     write_rows_to_csv,
 )
@@ -47,6 +46,7 @@ def train(
         dir_out, 
         dir_out_scratch, 
         split, 
+        n_vars,
         sz_space, 
         n_facs, 
         alpha, 
@@ -64,7 +64,6 @@ def train(
     path_model = os.path.join(dir_out, f'model-lbfgs-{split}.pth')
 
     dataset = CentralizedCovarianceDataset(dir_cov, dir_idx, split)
-    n_vars = multiply_list(sz_space)
     path_init = os.path.join(dir_out, f'init-loads-{split}.pt')
     model = LowRankCovariance(n_vars, n_facs, path_init)
 
@@ -74,7 +73,7 @@ def train(
         history_size=history_size
     )
     # loss_fcn_ = partial(loss_fcn, n_vars=n_vars)
-    diff_mat = create_second_difference_matrix([n_vars])
+    diff_mat = create_second_difference_matrix(sz_space)
     penalty_fcn_ = partial(penalty_fcn, alpha=alpha, diff_mat=diff_mat)
 
     last_objective = float('inf')
@@ -152,6 +151,7 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
     parser.add_argument('--sz_space', type=int, nargs='+')
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--n_facs', type=int)
     parser.add_argument('--alpha', type=float, default=0)
     parser.add_argument('--lr', type=float)
@@ -161,6 +161,10 @@ if __name__ == '__main__':
     parser.add_argument('--max_epochs', type=int, default=100)
     parser.add_argument('--benchmark', action='store_true')
     args = parser.parse_args()
+
+    # TODO: Add mask handling
+    if args.path_mask is not None: 
+        raise Exception("Script cannot handle mask yet!")
     
     config = load_config(args.config)
 

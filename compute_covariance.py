@@ -86,6 +86,7 @@ if __name__ == '__main__':
     parser.add_argument('--prop_train_space', type=float, default=0.8)
     parser.add_argument('--bsz_time', type=int)
     parser.add_argument('--bsz_space', type=int)
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--fse', action='store_true')
     parser.add_argument('--refresh_dirs', action='store_true')
     parser.add_argument('--seed', type=int, default=12345)
@@ -107,9 +108,15 @@ if __name__ == '__main__':
     # Flatten dataset, getting `n_time` and `sz_space` along the way
     n_time, sz_space = flatten_dataset(
         args.dir_dataset, dir_data, 
-        args.bsz_time, args.bsz_space
+        args.bsz_time, args.bsz_space,
+        args.path_mask
     )
-    n_vars = multiply_list(sz_space)
+
+    # Get the number of spatial locations
+    if args.path_mask is None: 
+        n_vars = multiply_list(sz_space)
+    else: 
+        n_vars = torch.nonzero(torch.load(args.path_mask)).shape[0]
 
     # Multiprocessing settings
     mp.set_start_method('spawn')
@@ -150,11 +157,15 @@ if __name__ == '__main__':
     # ---------- POINT GENERATION ---------- #
     print("Generating points...")
 
-    n_vars = multiply_list(sz_space)
-    points_loaders = [gen_points(sz_space, args.delta, 100*n_vars)] # TODO: 10 --> 100
+    points_loaders = [
+        gen_points(sz_space, args.delta, 100*n_vars, path_mask=args.path_mask)
+    ] # TODO: 10 --> 100
     file_prefixes = ['points-offband']
     if args.fse:
-        points_loaders += [gen_points(sz_space, args.delta, 100*n_vars, off_band=False)]
+        points_loaders += [
+            gen_points(sz_space, args.delta, 100*n_vars, 
+                       off_band=False, path_mask=args.path_mask)
+            ]
         file_prefixes += ['points-onband']
     for loader, prefix in zip(points_loaders, file_prefixes):
         n_batch = 0

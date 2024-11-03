@@ -23,6 +23,7 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--world_size', type=int)
+    parser.add_argument('--path_mask', type=str)
     parser.add_argument('--sz_space', type=int, nargs='+')
     parser.add_argument('--n_facs', type=int)
     parser.add_argument('--batch_size', type=int)
@@ -58,6 +59,7 @@ if __name__ == '__main__':
         'dir_out': args.dir_out,
         'dir_out_scratch': args.dir_out_scratch,
         'split': 'train',
+        'path_mask': args.path_mask,
         'sz_space': args.sz_space,
         'n_facs': args.n_facs,
         'lr': args.lr,

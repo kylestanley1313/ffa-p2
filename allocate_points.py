@@ -140,7 +140,7 @@ def allocate_points_dssgd(
             strat_ = block_map.get(block)
             if strat_ is not None:
                 strat[i] = strat_
-        mask = strat != 1
+        mask = strat != -1
         idx = torch.nonzero(mask).squeeze() + start
 
         idx_list.append(idx)

@@ -3,7 +3,6 @@ import nibabel as nib
 import numpy as np
 import os
 import subprocess
-import torch
 
 from config import load_config
 

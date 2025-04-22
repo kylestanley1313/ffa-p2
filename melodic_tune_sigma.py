@@ -14,7 +14,8 @@ from utils import (
 
 
 # TODO: Refine this grid
-SIGMAS = [0, 0.5, 2, 2.5, 3, 3.5, 4, 4.5, 5]
+# SIGMAS = [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5, 2.75, 3.0]
+SIGMAS = [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 
 
 if __name__ == '__main__':
@@ -23,17 +24,19 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--n_sub', type=int)
+    parser.add_argument('--n_folds', type=int)
     parser.add_argument('--n_comps', type=int)
     args = parser.parse_args()
 
     config = load_config(args.config)
 
     # Directory/path preparation
+    dir_data = os.path.join(args.dir_out_scratch, 'data')
     dir_cov = os.path.join(args.dir_out_scratch, 'cov')
     path_sigma = os.path.join(args.dir_out, f'sigma.pt')
-    path_out_space = os.path.join(args.dir_out, 'ica-space_split-train.npy')
-    path_out_time = os.path.join(args.dir_out, 'ica-time_split-train.npy')
+    path_fold = lambda v: os.path.join(dir_data, f'subs_v-{v}.pt')
+    path_out_space = lambda v: os.path.join(args.dir_out, f'icas-space_split-train_v-{v}.npy')
+    path_out_time = lambda v: os.path.join(args.dir_out, f'icas-time_split-train_v-{v}.npy')
 
     # Build path/flags
     path = os.path.join(config.root, 'melodic_estimation.py')
@@ -41,8 +44,7 @@ if __name__ == '__main__':
         'config': args.config,
         'dir_out': args.dir_out,
         'dir_out_scratch': args.dir_out_scratch,
-        'split': 'train',
-        'n_sub': args.n_sub,
+        'n_folds': args.n_folds,
         'n_comps': args.n_comps
     }
 
@@ -50,16 +52,22 @@ if __name__ == '__main__':
     best_sigma = None
     best_valid_loss = float('inf')
     for sigma in SIGMAS:
-
-        # Run MELODIC
         flags['sigma'] = sigma
-        code = execute_script(path, flags, False)
 
-        # Compute validation loss
-        loads = np.load(path_out_space)
-        loads = loads.reshape(multiply_list(loads.shape[:3]), loads.shape[3])
-        model = model_from_loads(torch.tensor(loads))
-        valid_loss = compute_loss(model, dir_cov, 'valid').item()
+        valid_loss = 0
+        for v in range(args.n_folds):
+
+            # Run MELODIC
+            flags['fold'] = v
+            code = execute_script(path, flags, False)
+
+            # Compute validation loss
+            loads = np.load(path_out_space(v))
+            loads = loads.reshape(multiply_list(loads.shape[:3]), loads.shape[3])
+            model = model_from_loads(torch.tensor(loads))
+            valid_loss += compute_loss(model, dir_cov, 'valid', v).item()
+
+        valid_loss /= args.n_folds
         print(f"sigma = {sigma} | valid_loss = {valid_loss}")
 
         # Break from loop if improvement stops or update best model
@@ -72,9 +80,10 @@ if __name__ == '__main__':
     torch.save(torch.tensor(best_sigma, dtype=torch.float32), path_sigma)
 
     # Cleanup models
-    if os.path.exists(path_out_space):
-        os.remove(path_out_space)
-    if os.path.exists(path_out_time):
-        os.remove(path_out_time)
+    for v in range(args.n_folds):
+        if os.path.exists(path_out_space(v)):
+            os.remove(path_out_space(v))
+        if os.path.exists(path_out_time(v)):
+            os.remove(path_out_time(v))
 
 

@@ -3,6 +3,9 @@ import nibabel as nib
 import numpy as np
 import os
 import subprocess
+import torch
+
+from typing import Optional
 
 from config import load_config
 
@@ -22,28 +25,37 @@ def run_subprocess(args):
 def run(
         dir_out: str, 
         dir_out_scratch: str,
-        split: str, 
-        n_sub: int, 
-        sigma: float, 
+        fold: int, 
+        n_folds: int,
+        sigma: Optional[float], 
         n_comps: int
     ) -> None:
 
     # Create directories
+    dir_data = os.path.join(dir_out_scratch, 'data')
     dir_data_ica = os.path.join(dir_out_scratch, 'data-ica')
     dir_ica = os.path.join(dir_out_scratch, 'ica')
     os.makedirs(dir_ica, exist_ok=True)
 
     # Path constructors
-    path_data = lambda n: os.path.join(dir_data_ica, f'data_split-{split}_n-{n}.nii.gz')
-    path_smooth = lambda n: os.path.join(dir_data_ica, f'data_n-{n}_smooth.nii.gz')
+    path_data = lambda n: os.path.join(dir_data_ica, f'data_split-full_n-{n}.nii.gz')
+    path_smooth = lambda n: os.path.join(dir_data_ica, f'data_split-full_n-{n}_smooth.nii.gz')
+
+    # Get subjects
+    subs = []
+    for v in range(n_folds):
+        if v == fold:
+            continue
+        path = os.path.join(dir_data, f'subs_v-{v}.pt')
+        subs += torch.load(path).tolist()
 
     # Smooth scans
-    if sigma > 0: 
-        for n in range(n_sub):
+    if sigma is not None and sigma > 0: 
+        for n in subs:
             run_subprocess(['fslmaths', path_data(n), '-s', str(sigma), path_smooth(n)])
-        input_files = [path_smooth(n) for n in range(n_sub)]
+        input_files = [path_smooth(n) for n in subs]
     else: 
-        input_files = [path_data(n) for n in range(n_sub)]
+        input_files = [path_data(n) for n in subs]
 
     # Run MELODIC
     args = [
@@ -55,11 +67,12 @@ def run(
         '--nobet',
         '--tr=1.0',
         '--Oorig',
+        # '--Opca',
         '--disableMigp',
         '--varnorm',
         '--maxit=1000',
         '-d', str(n_comps),
-        '--seed=12345'
+        '--seed=12346'
     ]
     run_subprocess(args)
 
@@ -67,14 +80,29 @@ def run(
     # NOTE: These MELODIC outputs appear to be on the same scale as the true 
     # loadings and factors, resp.
     path = os.path.join(dir_ica, 'melodic_oIC.nii.gz')
+    # path = os.path.join(dir_ica, 'melodic_pca.nii.gz')
     comps = nib.load(path).get_fdata().astype(np.float32)
     path = os.path.join(dir_ica, 'melodic_mix')
     mix_mat = np.loadtxt(path).astype(np.float32)
 
+    # print(f"comps.shape = {comps.shape}")
+    # path = os.path.join(dir_ica, 'melodic_pca.nii.gz')
+    # tmp = nib.load(path).get_fdata().astype(np.float32)
+    # print(f"tmp.shape = {tmp.shape}")
+
+
+
     # Write results
-    path = os.path.join(dir_out, f'ica-space_split-{split}.npy')
+    method = 'ica' if sigma is None else 'icas' 
+    path = os.path.join(
+        dir_out, 
+        f'{method}-space_split-full.npy' if fold is None else f'{method}-space_split-train_v-{fold}.npy'
+    )
     np.save(path, comps)
-    path = os.path.join(dir_out, f'ica-time_split-{split}.npy')
+    path = os.path.join(
+        dir_out, 
+        f'{method}-time_split-full.npy' if fold is None else f'{method}-time_split-train_v-{fold}.npy'
+    )
     np.save(path, mix_mat)
 
 
@@ -85,9 +113,9 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--split', type=str)
-    parser.add_argument('--n_sub', type=int)
-    parser.add_argument('--sigma', type=float, default=0)
+    parser.add_argument('--fold', type=int)
+    parser.add_argument('--n_folds', type=int)
+    parser.add_argument('--sigma', type=float)
     parser.add_argument('--n_comps', type=int)
     args = parser.parse_args()
 
@@ -95,7 +123,8 @@ if __name__ == '__main__':
 
     run(
         args.dir_out, args.dir_out_scratch, 
-        args.split, args.n_sub, args.sigma, args.n_comps
+        args.fold, args.n_folds,
+        args.sigma, args.n_comps
     )
 
 

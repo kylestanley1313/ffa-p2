@@ -83,7 +83,7 @@ class BumpFunction1D(object):
         points /= torch.tensor(self.scale)
 
         # Evaluate transformed points
-        vals = torch.zeros_like(points, dtype=torch.float64)
+        vals = torch.zeros_like(points, dtype=torch.float32)
         idx = torch.abs(points) <= 1
         vals[idx] = torch.exp(-1 / (1 - points[idx] ** 2))
         return self.max * math.exp(1) * vals
@@ -108,13 +108,13 @@ class BumpFunction2D(object):
         self.rot_mat = torch.tensor([
             [math.cos(rotation), -math.sin(rotation)],
             [math.sin(rotation), math.cos(rotation)]
-        ], dtype=torch.float64)
+        ], dtype=torch.float32)
 
         # Matrix for scaling about origin
         self.scale_mat = torch.tensor([
             [scale[0], 0],
             [0, scale[1]]
-        ], dtype=torch.float64)
+        ], dtype=torch.float32)
 
     def __call__(self, points: torch.Tensor) -> torch.Tensor:
 
@@ -124,7 +124,7 @@ class BumpFunction2D(object):
         points = (torch.inverse(self.rot_mat @ self.scale_mat) @ points.t()).t()
 
         # Evaluate transformed points
-        vals = torch.zeros(len(points), dtype=torch.float64)
+        vals = torch.zeros(len(points), dtype=torch.float32)
         r = torch.sqrt(torch.sum(points ** 2, dim=1))
         idx = torch.abs(r) <= 1
         vals[idx] = torch.exp(-1 / (1 - r[idx] ** 2))
@@ -153,17 +153,17 @@ class BumpFunction3D(object):
             [1, 0, 0],
             [0, math.cos(rotation[0]), -math.sin(rotation[0])],
             [0, math.sin(rotation[0]), math.cos(rotation[0])]
-        ], dtype=torch.float64)
+        ], dtype=torch.float32)
         rot_mat_y = torch.tensor([
             [math.cos(rotation[1]), 0, math.sin(rotation[1])],
             [0, 1, 0],
             [-math.sin(rotation[1]), 0, math.cos(rotation[1])]
-        ], dtype=torch.float64)
+        ], dtype=torch.float32)
         rot_mat_z = torch.tensor([
             [math.cos(rotation[2]), -math.sin(rotation[2]), 0],
             [math.sin(rotation[2]), math.cos(rotation[2]), 0],
             [0, 0, 1]
-        ], dtype=torch.float64)
+        ], dtype=torch.float32)
         self.rot_mat = rot_mat_z @ rot_mat_y @ rot_mat_x
 
         # Matrix for scaling about origin
@@ -171,7 +171,7 @@ class BumpFunction3D(object):
             [scale[0], 0, 0],
             [0, scale[1], 0],
             [0, 0, scale[2]]
-        ], dtype=torch.float64)
+        ], dtype=torch.float32)
 
     def __call__(self, points: torch.Tensor) -> torch.Tensor:
 
@@ -181,7 +181,7 @@ class BumpFunction3D(object):
         points = (torch.inverse(self.rot_mat @ self.scale_mat) @ points.t()).t()
 
         # Evaluate transformed points
-        vals = torch.zeros(len(points), dtype=torch.float64)
+        vals = torch.zeros(len(points), dtype=torch.float32)
         r = torch.sqrt(torch.sum(points ** 2, dim=1))
         idx = torch.abs(r) <= 1
         vals[idx] = torch.exp(-1 / (1 - r[idx] ** 2))
@@ -195,13 +195,13 @@ def bspline_basis_fcns(
     ) -> List[Callable]:
 
     # Define the knot sequence, then pad
-    knots = np.linspace(domain_range[0], domain_range[1], n_basis - order + 1)
+    knots = np.linspace(domain_range[0], domain_range[1], n_basis - order + 1, dtype=np.float32)
     knots = np.concatenate(([domain_range[0]] * order, knots, [domain_range[1]] * order))
 
     # Get list of basis functions
     fcns = []
     for i in range(n_basis):
-        coeffs = np.zeros(n_basis)
+        coeffs = np.zeros(n_basis, dtype=np.float32)
         coeffs[i] = 1.0
         basis = BSpline(knots, coeffs, order)
         fcns.append(basis)
@@ -230,26 +230,9 @@ def simulate_gauss_procs(
     #   C = LL^T --> cholesky
     #   z ~ iid N(0, 1)
     #   zL^T ~ N(0, C)
-    l = torch.linalg.cholesky(cov + gamma * np.eye(len(grid)))
-    z = torch.randn((n_procs, len(grid)), generator=gen, dtype=torch.float64)
+    l = torch.linalg.cholesky(cov + gamma * np.eye(len(grid), dtype=np.float32))
+    z = torch.randn((n_procs, len(grid)), generator=gen, dtype=torch.float32)
     return z @ l.t()
-
-
-def scale_proc_vars(
-        procs: torch.Tensor, 
-        kernel: Callable, 
-        gen: torch.Generator
-    ) -> torch.Tensor:
-    # To scale a processes variance...
-    #   z ~ (0, C) --> input
-    #   v --> smooth positive mean-one real numbers
-    #   z * sqrt(v) ~ (0, DC_vD) --> D = diag(sqrt(v))
-    n_procs, n_time = procs.shape
-    grid = torch.arange(n_time) + 1
-    v = simulate_gauss_procs(grid, n_procs, kernel, gen) # for smooth variances
-    v = torch.exp(v) # for positive variances
-    v = v / v.mean(dim=1, keepdim=True) # for mean-one variances
-    return procs * torch.sqrt(v)
 
 
 
@@ -269,7 +252,7 @@ class LoadingFunction(ABC):
             raise Exception("Pieces do not having matching dimensions!")
 
     def __call__(self, points: torch.Tensor) -> torch.Tensor:
-        vals = torch.zeros(len(points), dtype=torch.float64)
+        vals = torch.zeros(len(points), dtype=torch.float32)
         for piece in self.pieces:
             vals += piece(points)
         return safe_l2_normalization(vals)
@@ -461,7 +444,7 @@ class LoadingScheme(ABC):
         self.n_fcns = n_fcns
 
     def __call__(self, points: torch.Tensor) -> torch.Tensor:
-        vals = torch.zeros(self.n_fcns, len(points), dtype=torch.float64)
+        vals = torch.zeros(self.n_fcns, len(points), dtype=torch.float32)
         for k in range(self.n_fcns):
             fcn = self.loading_fcns[k]()
             vals[k] = fcn(points) * self.scales[k]
@@ -604,11 +587,11 @@ class BSplineBasicFS(BasicFunctionSet):
         mask1 = eval_points >= self.domain_range[0]
         mask2 = eval_points <= self.domain_range[1]
         mask = torch.logical_and(mask1, mask2)
-        out = torch.zeros((len(self.fcns), len(eval_points)), dtype=torch.float64)
+        out = torch.zeros((len(self.fcns), len(eval_points)), dtype=torch.float32)
         out_list = [None] * self.n_fcns
         for j in range(self.n_fcns):
             out_ = self.fcns[j](eval_points[mask].numpy())
-            out_ = torch.tensor(out_).to(torch.float64)
+            out_ = torch.tensor(out_).to(torch.float32)
             out_list[j] = out_
         out[:,mask] = torch.vstack(out_list)
         return out
@@ -635,7 +618,6 @@ class GaussianProcessBasicFS(BasicFunctionSet):
             domain_range: List[float],  # NOTE: Can I use domain_range to infer the number of time points? A bit hacky...
             n_fcns: int,
             kernel: Callable,
-            kernel_var: Optional[Callable] = None,
             gen: torch.Generator = torch.Generator(),
             chol_pen: float = 1e-5
         ) -> None:
@@ -649,7 +631,7 @@ class GaussianProcessBasicFS(BasicFunctionSet):
         grid = torch.linspace(
             domain_range[0], domain_range[1], 
             steps=domain_range[1],
-            dtype=torch.float64
+            dtype=torch.float32
         )
         procs = simulate_gauss_procs(
             grid=grid,
@@ -658,8 +640,6 @@ class GaussianProcessBasicFS(BasicFunctionSet):
             gen=gen,
             gamma=chol_pen
         )
-        if kernel_var is not None:
-            procs = scale_proc_vars(procs, kernel_var, gen)
 
         # Get B-spline basis functions
         self.procs = [None] * n_fcns
@@ -671,9 +651,9 @@ class GaussianProcessBasicFS(BasicFunctionSet):
             self, 
             eval_points: torch.Tensor
         ) -> torch.Tensor:
-        out = torch.zeros(self.n_fcns, len(eval_points), dtype=torch.float64)
+        out = torch.zeros(self.n_fcns, len(eval_points), dtype=torch.float32)
         for j in range(self.n_fcns):
-            out[j] = torch.tensor(self.procs[j](eval_points)).to(torch.float64)
+            out[j] = torch.tensor(self.procs[j](eval_points)).to(torch.float32)
         return out
 
 
@@ -686,14 +666,14 @@ class Bump1DBasicFS(BasicFunctionSet):
             width: float
         ) -> None:
         super().__init__(domain_range=domain_range, n_fcns=n_fcns)
-        centers = torch.linspace(0, 1, n_fcns, dtype=torch.float64)
+        centers = torch.linspace(0, 1, n_fcns, dtype=torch.float32)
         self.fcns = [BumpFunction1D(c.item(), width / 2, 1) for c in centers]
 
     def __call__(
             self, 
             eval_points: torch.Tensor
         ) -> torch.Tensor:
-        out = torch.zeros((self.n_fcns, len(eval_points)), dtype=torch.float64)
+        out = torch.zeros((self.n_fcns, len(eval_points)), dtype=torch.float32)
         for j in range(self.n_fcns):
             out[j] = self.fcns[j](eval_points)
         return out
@@ -730,7 +710,7 @@ class BSplinePinned1DBasicFS(BasicFunctionSet):
         # from local bases
         self.coeffs = torch.randn(
             size=(n_fcns, n_fcns_base), 
-            dtype=torch.float64, 
+            dtype=torch.float32, 
             generator=gen
         )
 
@@ -800,20 +780,12 @@ class ErrorScheme(ABC):
             width_space: float,
             n_time: int,
             kernel_length: float,
-            kernel_length_var: Optional[float] = None,
             gen: torch.Generator = torch.Generator()
         ) -> None:
         self.gen = gen
         self.width_space = width_space
         self.n_time = n_time
         self.kernel = partial(squared_exponential_kernel, length=kernel_length)
-        if kernel_length_var is None: 
-            self.kernel_var = None
-        else: 
-            self.kernel_var = partial(
-                squared_exponential_kernel, 
-                length=kernel_length_var
-            )
 
         self.fset_space = self.get_fset_space()
         self.fset_time = self.get_fset_time()
@@ -825,7 +797,7 @@ class ErrorScheme(ABC):
         self.ndim = self.fset_space.ndim + 1
 
         # Generate coefficients for functions in tensor product set
-        self.coeffs = torch.rand(self.n_fcns, generator=gen, dtype=torch.float64)
+        self.coeffs = torch.rand(self.n_fcns, generator=gen, dtype=torch.float32)
         self.coeffs *= (self.scale_max - self.scale_min)
         self.coeffs += self.scale_min
 
@@ -926,7 +898,6 @@ class GaussProc_Bump1D_ErrorScheme(ErrorScheme):
             domain_range=[1, self.n_time],
             n_fcns=20,
             kernel=self.kernel,
-            kernel_var=self.kernel_var,
             gen=self.gen
         )
 
@@ -949,7 +920,6 @@ class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
             domain_range=[1, self.n_time],
             n_fcns=400,
             kernel=self.kernel,
-            kernel_var=self.kernel_var,
             gen=self.gen
         )
     
@@ -972,7 +942,6 @@ class GaussProc_BumpTensor3D_ErrorScheme(ErrorScheme):
             domain_range=[1, self.n_time],
             n_fcns=8000,
             kernel=self.kernel,
-            kernel_var=self.kernel_var,
             gen=self.gen
         )
 
@@ -995,7 +964,6 @@ class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
             domain_range=[1, self.n_time],
             n_fcns=20,
             kernel=self.kernel,
-            kernel_var=self.kernel_var,
             gen=self.gen
         )
 
@@ -1019,7 +987,6 @@ class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
             domain_range=[1, self.n_time],
             n_fcns=400,
             kernel=self.kernel,
-            kernel_var=self.kernel_var,
             gen=self.gen
         )
     
@@ -1043,7 +1010,6 @@ class GaussProc_BSplinePinnedTensor3D_ErrorScheme(ErrorScheme):
             domain_range=[1, self.n_time],
             n_fcns=8000,
             kernel=self.kernel,
-            kernel_var=self.kernel_var,
             gen=self.gen
         )
     
@@ -1077,7 +1043,7 @@ def build_loadings(
 
     ndim = len(sz_space)
     ncomps = vals.shape[0]
-    loads = torch.zeros(ncomps, *sz_space, dtype=torch.float64)
+    loads = torch.zeros(ncomps, *sz_space, dtype=torch.float32)
 
     if ndim == 1:
         loads[:,indices] = vals
@@ -1151,7 +1117,7 @@ def simulate_ffm_data(
     # NOTE: By scaling each error function by a coefficient drawn from a 
     # zero-mean distribution with unit variance, we permit a simple closed 
     # form for the spatial error covariance which we use later. 
-    # NOTE: I originally sampled these coefficients from a stanard normal 
+    # NOTE: I originally sampled these coefficients from a standard normal 
     # distribution. However, if coefficient j is near zero, then the 
     # jth temporal error function will be a GP that stays near zero. Each voxel 
     # is nonzero on very few of the J spatial error functions. If these nonzero
@@ -1160,7 +1126,7 @@ def simulate_ffm_data(
     # very little to that voxel's observed time series. To avoid, this I
     # instead sample from a mean-zero discrete distribution with unit variance. 
     err_coeffs = torch.randint(0, 2, (n_err_fcns,), generator=gen) * 2 - 1
-    # err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float64, generator=gen)
+    # err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float32, generator=gen)
     errs_time = errs_time * err_coeffs.view(-1, 1)
 
     # Compute global and local l2 norms
@@ -1187,6 +1153,7 @@ def simulate_ffm_data(
         comp_local *= (1 - prop_global)
         yield comp_global + comp_local
 
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
@@ -1210,6 +1177,10 @@ if __name__ == '__main__':
     parser.add_argument('--read_loads', action='store_true')
     parser.add_argument('--read_errs', action='store_true')
     parser.add_argument(
+        '--n_sub', type=int,
+        help="Number of subjects for which to simulate data."
+    )
+    parser.add_argument(
         '--n_time', type=int,
         help=("Number of time points for which to simulate data. Since the "
               "temporal domain is 1-dimensional, this an integer argument.")
@@ -1231,6 +1202,10 @@ if __name__ == '__main__':
         help="Number of factors in global component."
     )
     parser.add_argument(
+        '--path_fac_cov', type=str,
+        help="Path to factor covariance file."
+    )
+    parser.add_argument(
         '--delta', type=float,
         help="Bandwidth of spatial error covariance."
     )
@@ -1243,16 +1218,8 @@ if __name__ == '__main__':
         help="Kernel length for factors over time."
     )
     parser.add_argument(
-        '--kernel_length_fac_var', type=float,
-        help="Kernel length for factor variances over time. None for constant variance"
-    )
-    parser.add_argument(
         '--kernel_length_err', type=float,
         help="Kernel length for errors over time."
-    )
-    parser.add_argument(
-        '--kernel_length_err_var', type=float,
-        help="Kernel length for error variances over time. None for constant variance"
     )
     parser.add_argument(
         '--batch_size', type=int, 
@@ -1272,25 +1239,30 @@ if __name__ == '__main__':
     config = load_config(args.config)
     gen = torch.Generator().manual_seed(args.seed)
     load_scheme = LOADING_SCHEMES[args.load_scheme](args.n_facs)
-    err_scheme = ERROR_SCHEMES[args.err_scheme](
-        width_space=args.delta, 
-        n_time=args.n_time, 
-        kernel_length=args.kernel_length_err,
-        kernel_length_var=args.kernel_length_err_var,
-        gen=gen
-    )
     sz = [args.n_time] + args.sz_space
 
-    # Check for `load_scheme`, `err_scheme`, and `sz_space` compatibility
+    # Check for `load_scheme` and `sz_space` compatibility
     if load_scheme.ndim != len(args.sz_space):
         msg = ("Number of loading scheme dimensions does not match the number " 
                "of spatial dimensions!")
-        raise Exception(msg)       
-    if err_scheme.ndim != len(args.sz_space) + 1:
-        msg = ("Number of error scheme dimensions does not match the number " 
-               "of spatiotemporal dimensions!")
         raise Exception(msg)  
 
+    # Check for n_facs and path_fac_cov compatibility
+    if args.path_fac_cov: 
+
+        # Read factor covariance
+        fac_cov = torch.load(args.path_fac_cov)
+        if args.n_facs != fac_cov.shape[0]:
+            msg = "Dimension of factor covariance must match the number of factors!"
+            raise Exception(msg)
+
+        # Compute factor covariance square root
+        vals, vecs = torch.linalg.eig(fac_cov)
+        fac_cov_sqrt = torch.real(vecs @ torch.diag(torch.sqrt(vals)))
+    
+    else: 
+        fac_cov_sqrt = None
+          
 
     # ---------- LOADING, FACTOR, AND ERROR PREP ---------- #
 
@@ -1305,7 +1277,7 @@ if __name__ == '__main__':
     indices_space_list = []
     for sz_ in args.sz_space:
         indices_ = torch.arange(sz_, dtype=torch.int32)
-        points_ = indices_.to(torch.float64) / sz_
+        points_ = indices_.to(torch.float32) / sz_
         indices_space_list.append(indices_)
         points_space_list.append(points_)
     indices_space = torch.cartesian_prod(*indices_space_list)  # M-by-ndim_space
@@ -1313,11 +1285,7 @@ if __name__ == '__main__':
 
     # Generate `points_time` and `indices_time` from `n_time`
     indices_time = torch.arange(args.n_time, dtype=torch.int32)
-    points_time = (indices_time + 1).to(torch.float64)
-
-    # # Get `points` and `indices` by taking cartesian product
-    # indices = torch.cartesian_prod(indices_time, *indices_space_list)
-    # points = torch.cartesian_prod(points_time, *points_space_list)
+    points_time = (indices_time + 1).to(torch.float32)
 
     # NOTE: 
     #   - Directory dir_dataset_truth contains: 
@@ -1329,6 +1297,8 @@ if __name__ == '__main__':
     #       * factors
 
     # Build loading tensor
+    # NOTE: Prepare loadings outside subject loop because they are common
+    # to all subjects.
     print("Preparing loadings...")
     path = os.path.join(args.dir_dataset_truth, 'loads.pt')
     if args.read_loads: 
@@ -1337,69 +1307,90 @@ if __name__ == '__main__':
         vals = load_scheme(points_space)  # n_facs-by-sz_shape
         loads = build_loadings(indices_space, args.sz_space, vals) 
         torch.save(loads, path)
-
-    # Build factor tensor
-    print("Preparing factors...")
-    kernel = partial(squared_exponential_kernel, length=args.kernel_length_fac)
-    facs = simulate_gauss_procs(points_time, args.n_facs, kernel, gen)
-    if args.kernel_length_fac_var is not None:
-        kernel_var = partial(squared_exponential_kernel, length=args.kernel_length_fac_var)
-        facs = scale_proc_vars(facs, kernel_var, gen)
-    facs = facs.t() # n_time-by-n_facs
-    torch.save(facs, os.path.join(args.dir_out, 'facs.pt'))
-
-    # Build error tensor, then scale error tensor by coefficients
-    # TODO: Is there a way to accelerate error generation? Currently much slower
-    # than loading/factor generation. Cache error schemes?
-    print("Preparing errors....")
-    path_space = os.path.join(args.dir_dataset_truth, 'errs-space.pt')
-    path_time = os.path.join(args.dir_dataset_truth, 'errs-time.pt')
-    if args.read_errs:
-        errs_space = torch.load(path_space)
-        errs_time = torch.load(path_time)
-    else: 
-        vals_space, errs_time = err_scheme(points_space, points_time)  
-        errs_space = build_errors(indices_space, args.sz_space, vals_space)
-        torch.save(errs_space, path_space)
-        torch.save(errs_time, path_time)
-
-
-    # ---------- DATA SIMULATION ---------- #
-
-    print("Simulating new data...")
-    dataloader = simulate_ffm_data(
-        loads, 
-        facs,
-        errs_space,
-        errs_time,
-        args.prop_global,
-        args.batch_size,
-        gen=gen
-    )
-    norm_global, norm_local = next(dataloader)
-    write_generated_tensor(dataloader, args.dir_dataset, 'data')
-
-    # Write (properly scaled) tensors
-    # NOTE: (Loading and error scaling)
-    #   To control the signal-to-noise ratio, we scale the global and local
-    #   components of our data by p/||comp_glob|| and (1-p)/||comp_loc||, 
-    #   respectively. This means that the "true" loadings and errors are not
-    #   `loads` and `errs`, but these quantities scaled by the aforementioned
-    #   factors. 
     n_vars = multiply_list(loads.shape[1:])
+
+    for n in range(args.n_sub):
+        print(f"----- Subject {n} -----")
+
+        # Build factor tensor
+        print("Preparing factors...")
+        kernel = partial(squared_exponential_kernel, length=args.kernel_length_fac)
+        facs = simulate_gauss_procs(points_time, args.n_facs, kernel, gen)
+        if fac_cov_sqrt is not None: 
+            facs = fac_cov_sqrt @ facs
+        facs = facs.t() # n_time-by-n_facs
+
+        # Build error tensor, then scale error tensor by coefficients
+        print("Preparing errors....")
+        path_space = os.path.join(args.dir_dataset_truth, f'errs-space_n-{n}_.pt')
+        path_time = os.path.join(args.dir_dataset_truth, f'errs-time_n-{n}_.pt')
+        if args.read_errs:
+            errs_space = torch.load(path_space)
+            errs_time = torch.load(path_time)
+        else: 
+            err_scheme = ERROR_SCHEMES[args.err_scheme](
+                width_space=args.delta, 
+                n_time=args.n_time, 
+                kernel_length=args.kernel_length_err,
+                gen=gen
+            )
+            if err_scheme.ndim != len(args.sz_space) + 1:
+                msg = ("Number of error scheme dimensions does not match the "
+                       "number of spatiotemporal dimensions!")
+                raise Exception(msg) 
+            vals_space, errs_time = err_scheme(points_space, points_time)  
+            errs_space = build_errors(indices_space, args.sz_space, vals_space)
+            # torch.save(errs_space, path_space)
+            # torch.save(errs_time, path_time)
+
+
+        # ---------- DATA SIMULATION ---------- #
+
+        print("Simulating new data...")
+        dataloader = simulate_ffm_data(
+            loads, 
+            facs,
+            errs_space,
+            errs_time,
+            args.prop_global,
+            args.batch_size,
+            gen=gen
+        )
+        norm_global, norm_local = next(dataloader)
+        write_generated_tensor(dataloader, args.dir_dataset, f'data_n-{n}')
+
+        # Write (properly scaled) tensors
+        # NOTE: (Loading and error scaling)
+        #   To control the signal-to-noise ratio, we scale the global and local
+        #   components of our data by p/||comp_glob|| and (1-p)/||comp_loc||, 
+        #   respectively. This means that the "true" loadings and errors are not
+        #   `loads` and `errs`, but these quantities scaled by the aforementioned
+        #   factors. 
+        torch.save(
+            facs * args.prop_global / norm_global, 
+            os.path.join(args.dir_out, f'facs_n-{n}_.pt')
+        )
+        errs_space = reshape_sparse_coo_tensor(errs_space, [errs_space.size(0), n_vars])
+        torch.save(
+            errs_space, 
+            os.path.join(args.dir_out, f'errs-space_n-{n}_.pt')
+        )
+        torch.save(
+            errs_time * (1 - args.prop_global) / norm_local, 
+            os.path.join(args.dir_out, f'errs-time_n-{n}_.pt')
+        )
+    
+    # Save loadings
     loads = loads.reshape(loads.shape[0], n_vars)
-    torch.save(
-        loads * args.prop_global / norm_global, 
-        os.path.join(args.dir_out, 'loads.pt')
-    )
-    errs_space = reshape_sparse_coo_tensor(errs_space, [errs_space.size(0), n_vars])
-    torch.save(
-        errs_space, 
-        os.path.join(args.dir_out, 'errs-space.pt')
-    )
-    torch.save(
-        errs_time * (1 - args.prop_global) / norm_local, 
-        os.path.join(args.dir_out, 'errs-time.pt')
-    )
+    torch.save(loads, os.path.join(args.dir_out, 'loads.pt'))
+
+    # Aggregate factors
+    facs = torch.zeros(args.n_sub, args.n_facs, args.n_time)
+    for n in range(args.n_sub):
+        path = os.path.join(args.dir_out, f'facs_n-{n}_.pt')
+        facs[n] = torch.load(path).t()
+        os.remove(path)
+    path = os.path.join(args.dir_out, f'facs.pt')
+    torch.save(facs, path)
 
     print("DONE!")

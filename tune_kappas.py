@@ -28,7 +28,7 @@ def compute_cv_loss_for_kappas(
     dir_cov = os.path.join(dir_out_scratch, f'cov')
     path_out = lambda v: os.path.join(
         dir_out, 
-        f'model-{est_method}-train-{v}-smooth-{rot_method}-shrink.pth'
+        f'model-{est_method}-train-{v}-{rot_method}-smooth-shrink.pth'
         # f'model-{est_method}-train-{v}-{rot_method}-shrink.pth'
     )
 
@@ -54,7 +54,7 @@ def compute_cv_loss_for_kappas(
 
         # Compute validation loss
         loads = torch.load(path_out(fold))['loads']
-        model = model_from_loads(loads @ rot_mats[fold])
+        model = model_from_loads(loads @ torch.linalg.inv(rot_mats[fold]))
         loss += compute_loss(model, dir_cov, 'valid', fold).item() / n_folds
 
         # Clean up
@@ -73,10 +73,13 @@ if __name__ == '__main__':
     parser.add_argument('--est_method', type=str)
     parser.add_argument('--rot_method', type=str)
     parser.add_argument('--n_folds', type=int)
+    parser.add_argument(
+        '--method', type=str,
+        choices=['universal', 'coordinate', 'sequential']
+    )
     parser.add_argument('--max_iters', type=int, default=100)
     parser.add_argument('--tol', type=float, default=1e-6)
     parser.add_argument('--radius', type=int, default=3)
-    parser.add_argument('--share_across_k', action='store_true')
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -84,8 +87,7 @@ if __name__ == '__main__':
     # Path preparation
     path_in = lambda v: os.path.join(
         args.dir_out, 
-        f'model-{args.est_method}-train-{v}-smooth-{args.rot_method}.pth'
-        # f'model-{args.est_method}-train-{v}-{args.rot_method}.pth'
+        f'model-{args.est_method}-train-{v}-{args.rot_method}-smooth.pth'
     )
 
     # Define kappa grid
@@ -122,7 +124,7 @@ if __name__ == '__main__':
     print(f"kappas = {kappas} | valid_loss = {best_loss}", flush=True)
 
     # Tune kappas via universal descent
-    if args.share_across_k: 
+    if args.method == 'universal':
         
         # Set index deltas
         deltas = torch.arange(1, args.radius + 1)
@@ -155,7 +157,7 @@ if __name__ == '__main__':
 
 
     # Tune kappas via coordinate descent
-    else: 
+    elif args.method == 'coordinate': 
 
         # Set index deltas
         tmp1 = -torch.flip(torch.arange(1, args.radius + 1), dims=[0])
@@ -199,8 +201,38 @@ if __name__ == '__main__':
                 break
             best_loss_prev = best_loss
 
+    elif args.method == 'sequential':
+        
+        for k in range(n_facs):
+            print(f"Tuning k = {k}...\n")
+            
+            test_idx = best_idx.copy()
+            last_loss = best_loss
+
+            for idx in range(1, max_idx + 1):
+                
+                test_idx[k] = idx
+                kappas = [kappa_grid[_].item() for _ in test_idx]
+                loss = compute_cv_loss_for_kappas_(kappas)
+                print(f"kappas = {kappas} | valid_loss = {loss}", flush=True)
+
+                if loss >= last_loss:  # if loss increases or load[k] zero'd out one step before
+                    best_idx[k] = idx - 1
+                    best_loss = last_loss
+                    break
+            
+                if idx == max_idx:  # if maximum kappa achieved
+                    best_idx[k] = idx
+                    best_loss = last_loss
+                    break
+
+                last_loss = loss
+
+    else: 
+        raise Exception("Invalid tuning method!")
+
     # Save kappas
-    path = os.path.join(args.dir_out, f'kappas-{args.est_method}.pt')
+    path = os.path.join(args.dir_out, f'kappas-{args.est_method}-{args.rot_method}.pt')
     kappas = torch.tensor([kappa_grid[_] for _ in best_idx])
     torch.save(kappas, path)
 

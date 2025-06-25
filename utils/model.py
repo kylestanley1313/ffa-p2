@@ -22,7 +22,7 @@ class LowRankCovariance(nn.Module):
         if path_init:
             self.loads = torch.load(path_init)
         else:
-            self.loads = torch.randn(n_vars, n_facs, dtype=torch.float64)
+            self.loads = torch.randn(n_vars, n_facs, dtype=torch.float32)
         self.loads.requires_grad_()
         self.loads = nn.Parameter(self.loads)
 

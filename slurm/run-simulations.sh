@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --account=open
-#SBATCH --job-name=simulation-fse
+#SBATCH --account=nfl5182_sc
+#SBATCH --job-name=simulation
 #SBATCH --mail-type=END,FAIL                      
 #SBATCH --mail-user=kms8227@psu.edu            
 #SBATCH -N 1                                      
 #SBATCH -n 1                                  
 #SBATCH --mem-per-cpu=1gb                         
-#SBATCH --time=03:00:00                           
+#SBATCH --time=06:00:00                           
 #SBATCH --output=slurm/output/simulation_%j.log
 
 echo " "
@@ -15,25 +15,38 @@ echo " "
 
 # Set variables
 ROOT='/storage/home/kms8227/work/ffa-p2-priv'
-SUPERDESIGN='bench2f'
-METHODS_LE='dssgd' # lbfgs,dsgd,dssgd'
-METHODS_FSE='pls,pgls,rbels,rbegls' #,rbels,rbegls'
-REGIMES_FSE='1,2,3'
+SUPERDESIGN='sim-test-3'
+METHODS_LE='dssgd'
+METHODS_FSE='rbels' #'pls,rbels'
+ROTATIONS='varimax,quartimin'
+REGIMES_FSE='3' #'1,3'
 
 cd $ROOT
 source slurm/utils.sh
 
 STEPS=(
-    'setup-simulations'
-    'simulate-data'
-    'compute-covariance'
-    'allocate-points'
-    'initialize-loadings'
-    # 'tune-alpha'
-    'estimate-loadings'
-    'compute-inv-err-cov'
-    'tune-gamma'
+
+    # 'setup-simulations'
+    # 'simulate-data'
+    # 'compute-covariance'
+
+    # 'allocate-points'
+    # 'initialize-loadings'
+    # # #  'tune-alpha'
+    # 'estimate-loadings'
+    # 'rotate'
+    # 'tune-sigmas'
+    # 'smooth-loadings'
+    # # # 'compute-inv-err-cov' # NOTE: GLS methods not appropriate for multiple subjects
+    # 'tune-kappas'
+    # 'shrink-loadings'
+    
+    'tune-gammas'
     'estimate-factor-scores'
+
+    # 'melodic-data-prep'
+    # 'melodic-tune-sigma'
+    # 'melodic-estimation'
 )
 
 LAST_STEP=""
@@ -50,6 +63,7 @@ for step in ${STEPS[@]}; do
     CMD+=" --superdesign=$SUPERDESIGN"
     CMD+=" --methods-le=$METHODS_LE"
     CMD+=" --methods-fse=$METHODS_FSE"
+    CMD+=" --rotations=$ROTATIONS"
     CMD+=" --regimes-fse=$REGIMES_FSE"
     CMD+=" --last-step=$LAST_STEP"
     

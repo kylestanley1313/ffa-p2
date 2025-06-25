@@ -49,17 +49,3 @@ if __name__ == '__main__':
         nib.save(data, path)
 
 
-
-    # for split in ['full', 'train', 'valid']:
-    #     for n in range(args.n_sub):
-
-    #         data = read_tensors( # (J,M) --> (M1,M2,1,J)
-    #             dir_data,
-    #             f'data-time_split-{split}_n-{n}',
-    #             sort_by=('i', int)
-    #         )
-    #         data = data.reshape(data.shape[0], *args.sz_space)
-    #         data = torch.permute(data, (1, 2, 0)).unsqueeze(2)
-    #         data = nib.Nifti1Image(data.numpy(), np.eye(4))
-    #         path = os.path.join(dir_data_ica, f'data_split-{split}_n-{n}.nii.gz')
-    #         nib.save(data, path)

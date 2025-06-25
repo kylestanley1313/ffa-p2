@@ -4,12 +4,14 @@ build_run_simulations_cmd () {
     #   2. design
     #   3. methods_le
     #   4. methods_fse
-    #   5. regimes_fse
+    #   5. rotations
+    #   6. regimes_fse
     
     # Parse arguments
     METHODS_LE="${3//,/ }"
     METHODS_FSE="${4//,/ }"
-    REGIMES_FSE="${5//,/ }"
+    ROTATIONS="${5//,/ }"
+    REGIMES_FSE="${6//,/ }"
 
     # Build run_simulations command
     CMD="python run_simulations.py --config roar"
@@ -20,6 +22,9 @@ build_run_simulations_cmd () {
     fi
     if [ ! -z "$METHODS_FSE" ]; then
         CMD+=" --methods_fse $METHODS_FSE"
+    fi
+    if [ ! -z "$ROTATIONS" ]; then
+        CMD+=" --rotations $ROTATIONS"
     fi
     if [ ! -z "$REGIMES_FSE" ]; then
         CMD+=" --regimes_fse $REGIMES_FSE"

@@ -12,13 +12,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
     parser.add_argument('--design', type=str)
-    parser.add_argument('--benchmark', action='store_true')
-    parser.add_argument('--fse', action='store_true')
     args = parser.parse_args()
 
     # Load config and design
     config = load_config(args.config)
-    design = load_yaml(os.path.join(config.root, 'designs', f'{args.design}.yml'))
+    design = load_yaml(os.path.join(config.group_root, 'designs', f'{args.design}.yml'))
     
     # Define globals
     n_reps = design.pop('n_reps')
@@ -26,9 +24,9 @@ if __name__ == '__main__':
     gen = torch.Generator().manual_seed(base_seed)
     
     # Prepare design directories
-    dir_design = os.path.join(config.root, 'designs', args.design)
+    dir_design = os.path.join(config.group_root, 'designs', args.design)
     dir_design_dataset = os.path.join(config.scratch_root, 'datasets', args.design)
-    dir_design_out = os.path.join(config.root, 'out', args.design)
+    dir_design_out = os.path.join(config.group_root, 'out', args.design)
     dir_design_out_scratch = os.path.join(config.scratch_root, 'out', args.design)
     refresh_directory(dir_design)
     refresh_directory(dir_design_dataset)
@@ -62,7 +60,7 @@ if __name__ == '__main__':
                 args.design, f'sim-{sim_cnt}'
             )
             rep['dir_out_sim'] = os.path.join(
-                config.root, 'out', 
+                config.group_root, 'out', 
                 args.design, f'sim-{sim_cnt}'
             )
             rep['dir_out'] = os.path.join(rep['dir_out_sim'], f'rep-{r}')
@@ -70,18 +68,20 @@ if __name__ == '__main__':
                 config.scratch_root, 'out', 
                 args.design, f'sim-{sim_cnt}', f'rep-{r}'
             )
+
             os.makedirs(rep['dir_dataset'])
             os.makedirs(rep['dir_out'])
             if not os.path.exists(rep['dir_out_scratch']):
                 os.makedirs(rep['dir_out_scratch'])
+
             os.makedirs(os.path.join(rep['dir_out_scratch'], 'data'))
             os.makedirs(os.path.join(rep['dir_out_scratch'], 'cov'))
-            if args.fse:
-                os.makedirs(os.path.join(rep['dir_out'], 'err-cov'))
-            for m in ['lbfgs', 'dsgd', 'dssgd']: 
-                os.makedirs(os.path.join(rep['dir_out_scratch'], f'idx-{m}'))
-            if args.benchmark: 
-                os.makedirs(os.path.join(rep['dir_out'], 'bench'))
+            os.makedirs(os.path.join(rep['dir_out_scratch'], f'idx-dssgd'))
+
+            os.makedirs(os.path.join(rep['dir_out'], 'gammas'))
+            os.makedirs(os.path.join(rep['dir_out'], 'est-facs'))
+
+            os.makedirs(os.path.join(rep['dir_out'], 'bench'))
             os.makedirs(os.path.join(rep['dir_out'], 'results'))
 
             rep['seed'] = rep_seeds[r]

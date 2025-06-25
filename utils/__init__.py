@@ -1,5 +1,6 @@
 import csv
 import math
+import nibabel as nib
 import numpy as np
 import os
 import pandas as pd
@@ -18,6 +19,24 @@ from utils.model import LowRankCovariance
 
 CODE_DIVERGENCE = 51
 CODE_NO_CONVERGENCE = 52
+
+
+# -------------------- AOMIC -------------------- #
+
+def get_sub_path(sub_num: int) -> str:
+    sub_label = str(sub_num).zfill(4)
+    sub_path = os.path.join(
+        '/storage/home/kms8227/scratch/datasets/ds002785',
+        f'derivatives/fmriprep/sub-{sub_label}/func',
+        f'sub-{sub_label}_task-restingstate_acq-mb3_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz'
+    )
+    return sub_path
+
+
+def read_sub_file(sub_num: int) -> torch.Tensor:
+    sub_path = get_sub_path(sub_num)
+    data = nib.load(sub_path).get_fdata()
+    return torch.from_numpy(data).to(torch.float32) 
 
 
 # -------------------- MISCELLANEOUS -------------------- #
@@ -184,6 +203,11 @@ def refresh_directory(dir):
     os.makedirs(dir)
 
 
+def remove_directory(dir):
+    if os.path.exists(dir):
+        shutil.rmtree(dir)
+
+
 def remove_file(path):
     if os.path.exists(path):
         os.remove(path)
@@ -256,9 +280,8 @@ def execute_script(path: str, flags: Dict[str, str], raise_error: bool = True) -
         print(proc.stdout)
         return 0
     except subprocess.CalledProcessError as err: 
-        print(f"returncode = {err.returncode} "
-              f"stderr = {err.stderr} "
-              f"stdout = {err.stdout}")
+        print(f"returncode = {err.returncode} \n"
+              f"stderr = {err.stderr}")
         if raise_error:
             raise Exception(err)
         else: 
@@ -272,6 +295,13 @@ def l2_norm(input: Union[torch.Tensor, np.ndarray]) -> float:
         return np.sqrt(np.sum(input ** 2) / input.size)
     else: 
         raise TypeError("Input must be a torch.Tensor or a np.ndarray")
+
+
+def is_square(n):
+    if n < 0:
+        return False
+    sqrt_n = int(math.sqrt(n))
+    return sqrt_n * sqrt_n == n
 
 
 def safe_l2_normalization(
@@ -452,13 +482,19 @@ def penalty_fcn_gradient(loads: torch.Tensor, diff_mat: torch.Tensor):
     return 2 * diff_mat @ loads / n_vars / n_facs
 
 
-def compute_loss(model, dir_cov, split):
-    points_loader = gen_tensors(dir_cov, 'points-offband', sort_by=('i', int))
-    cov_loader = gen_tensors(dir_cov, f'cov-offband_split-{split}', sort_by=('i', int))
+def compute_loss(model, dir_cov, split, fold=None):
+    points_loader = gen_tensors(dir_cov, 'points_', sort_by=('i', int))
+    cov_prefix = f'cov_split-{split}_'
+    if fold is not None: 
+        cov_prefix += f'v-{fold}_i-'
+    else: 
+        cov_prefix += f'i-'
+    cov_loader = gen_tensors(dir_cov, cov_prefix, sort_by=('i', int))
     loss = 0
-    for points, cov in zip(points_loader, cov_loader):
-        preds = model(points)
-        loss += loss_fcn(preds, cov)
+    with torch.no_grad():
+        for points, cov in zip(points_loader, cov_loader):
+            preds = model(points)
+            loss += loss_fcn(preds, cov)
     return loss
 
 
@@ -574,7 +610,7 @@ def create_second_difference_matrix(grid_shape):
     n_vars = multiply_list(grid_shape)
     fill_val = -2
     idx = torch.full((2, n_vars * 3 ** ndim), fill_val, dtype=torch.int32)
-    vals = torch.full((n_vars * 3 ** ndim,), fill_val, dtype=torch.float64)
+    vals = torch.full((n_vars * 3 ** ndim,), fill_val, dtype=torch.float32)
 
     # Build `idx` and `vals`
     idx_map = ReshapingIndexMap(grid_shape + grid_shape, [n_vars, n_vars])
@@ -625,6 +661,7 @@ def create_second_difference_matrix(grid_shape):
 def flatten_dataset(
         dir_dataset: str, 
         dir_out: str, 
+        sub_num: int,
         bsz_time: int, 
         bsz_space: int,
         path_mask: Optional[str]
@@ -642,7 +679,7 @@ def flatten_dataset(
     # Create the first flat view (temporal rows)
     i = 0
     n_time = 0
-    for data in gen_tensors(dir_dataset, 'data', bsz_time, ('i', int)):
+    for data in gen_tensors(dir_dataset, f'data_n-{sub_num}_', bsz_time, ('i', int)):
 
         if i == 0: 
             sz_space = list(data.shape[1:])
@@ -657,7 +694,7 @@ def flatten_dataset(
         if mask is not None: 
             data = data[:,mask]
 
-        path = os.path.join(dir_out, f'data-time_split-full_i-{i}_.pt')
+        path = os.path.join(dir_out, f'data-time_split-full_n-{sub_num}_i-{i}_.pt')
         torch.save(data, path)
 
         i += 1
@@ -671,11 +708,14 @@ def flatten_dataset(
         sz = min(bsz_space, n_space - start)
         batches = []
 
-        for batch in gen_tensors(dir_out, 'data-time_split-full_', bsz_time, ('i', int)):
+        for batch in gen_tensors(
+            dir_out, f'data-time_split-full_n-{sub_num}_', 
+            bsz_time, ('i', int)
+            ):
             batches.append(batch[:, start:(start + sz)])
         data = torch.cat(batches).t()
 
-        path = os.path.join(dir_out, f'data-space_split-full_i-{i}_.pt')
+        path = os.path.join(dir_out, f'data-space_split-full_n-{sub_num}_i-{i}_.pt')
         torch.save(data, path)
 
         i += 1
@@ -730,9 +770,8 @@ def gen_points(
         idx_map_mask = FlatMaskIndexMap(mask)
         
         # Mask indices
-        nz_idx = torch.nonzero(mask)
-        mask = (indices.unsqueeze(1) == nz_idx).all(-1).any(1)
-        indices = indices[mask]
+        nz_set = {tuple(row.tolist()) for row in torch.nonzero(mask)}
+        indices = torch.stack([row for row in indices if tuple(row.tolist()) in nz_set])
     
     bandwidths = torch.tensor([math.ceil(grid_shape[d]*delta) for d in range(ndim)])
 
@@ -817,9 +856,9 @@ def compute_covariance(
         points = torch.tensor(points)
 
     n_points = len(points)
-    t1 = torch.zeros(n_points, dtype=torch.float64)
-    t2 = torch.zeros(n_points, dtype=torch.float64)
-    t3 = torch.zeros(n_points, dtype=torch.float64)
+    t1 = torch.zeros(n_points, dtype=torch.float32)
+    t2 = torch.zeros(n_points, dtype=torch.float32)
+    t3 = torch.zeros(n_points, dtype=torch.float32)
     n = 0
     data_loader = gen_tensors(dir_data, f'data-time-{split}')
     for data in data_loader: 

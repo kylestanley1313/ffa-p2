@@ -5,7 +5,7 @@ import time
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from typing import List
+from typing import Optional
 
 from config import load_config
 from utils.data import (
@@ -57,7 +57,7 @@ def sync_model(
     reqs_idx_out = {}
     reqs_idx_in = {}
     loads_in = {
-        r: torch.zeros(sz_in[r].item(), model.n_facs, dtype=torch.float64) 
+        r: torch.zeros(sz_in[r].item(), model.n_facs, dtype=torch.float32) 
         for r in other_ranks
     }
     reqs_loads_out = {}
@@ -122,6 +122,7 @@ def process_epoch(
         # Sync model
         dist.barrier()
         sync_model(rank, world_size, model, points)
+        dist.barrier() # NOTE: new barrier
 
 
 def compute_objective(model, dataloader, loss_fcn, rank, world_size):
@@ -134,7 +135,7 @@ def compute_objective(model, dataloader, loss_fcn, rank, world_size):
         return None
     else: 
         for r in range(1, world_size):
-            worker_loss = torch.zeros(1, dtype=torch.float64)
+            worker_loss = torch.zeros(1, dtype=torch.float32)
             dist.recv(worker_loss, r)
             loss += worker_loss.item()
         return loss
@@ -146,6 +147,7 @@ def train(
         dir_out: str,
         dir_out_scratch: str,
         split: str,
+        fold: Optional[int],
         n_vars: int, 
         n_facs: int, 
         batch_size: int,
@@ -164,13 +166,19 @@ def train(
     # Set directories
     dir_cov = os.path.join(dir_out_scratch, 'cov')
     dir_idx = os.path.join(dir_out_scratch, 'idx-dssgd')
-    path_model = os.path.join(dir_out, f'model-dssgd-{split}.pth')
+    fname_model = f'model-dssgd-{split}'
+    if split != 'full': 
+        fname_model += f'-{fold}'
+    path_model = os.path.join(dir_out, f'{fname_model}.pth')
 
-    dataset = DistributedStratifiedCovarianceDataset(dir_cov, dir_idx, split, rank, world_size)
+    dataset = DistributedStratifiedCovarianceDataset(dir_cov, dir_idx, split, fold, rank, world_size)
     batch_sampler = DistributedStratifiedDatasetBatchSampler(dataset, batch_size, gen)
     dataloader = StratifiedDataLoader(dataset, batch_sampler=batch_sampler)
 
-    path_init = os.path.join(dir_out, f'init-loads-{split}.pt')
+    fname_init = f'init-loads-{split}'
+    if split != 'full': 
+        fname_init += f'-{fold}'
+    path_init = os.path.join(dir_out, f'{fname_init}.pt')
     model = LowRankCovariance(n_vars, n_facs, path_init)
     broadcast_model(model, rank, 0)
 
@@ -180,8 +188,6 @@ def train(
     epochs_waited = 0
     early_stop = torch.tensor(False)
     diverged = torch.tensor(False)
-    # prev_train_loss = float('inf')
-    # lr = torch.tensor(lr)
     if benchmark:
         bench_rows = []
     for epoch in range(max_epochs):
@@ -201,7 +207,7 @@ def train(
         
         # Rank-0 worker determines whether to stop and how to update lr
         if rank == 0:
-            print(f"epoch = {epoch + 1} | objective = {objective}")
+            print(f"epoch = {epoch + 1} | objective = {objective}", flush=True)
 
             # Handle divergence
             if torch.isnan(objective) or torch.isinf(objective):
@@ -217,9 +223,6 @@ def train(
                         print(f"Early stopping after {epoch + 1} epochs.")
                         early_stop = torch.tensor(True)
                 last_objective = objective
-
-            # Update learning rate via bold driver
-            # lr *= 1.05 if train_loss < prev_train_loss else 0.5
         
         # Communicate early_stop and lr to non-zero ranks
         dist.barrier()
@@ -234,11 +237,11 @@ def train(
 
             # Aggregate times then choose maximum
             if rank > 0: 
-                dist.send(torch.tensor(epoch_time, dtype=torch.float64), 0)
+                dist.send(torch.tensor(epoch_time, dtype=torch.float32), 0)
             else: 
                 max_epoch_time = epoch_time
                 for r in range(1, world_size):
-                    worker_epoch_time = torch.zeros(1, dtype=torch.float64)
+                    worker_epoch_time = torch.zeros(1, dtype=torch.float32)
                     dist.recv(worker_epoch_time, r)
                     max_epoch_time = max(max_epoch_time, worker_epoch_time.item())
                 bench_rows.append({
@@ -249,8 +252,6 @@ def train(
 
         if diverged or early_stop:
             break
-        # dist.broadcast(lr, 0)
-        # optimizer.param_groups[0]['lr'] = lr.item()
 
     # Emit exit code and/or save model
     if rank == 0:
@@ -270,7 +271,6 @@ def train(
 
             if not early_stop:
                 print(f"Warning: No convergence after {epoch + 1} epochs.")
-            
 
     dist.destroy_process_group()
 
@@ -284,6 +284,7 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--world_size', type=int)
     parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
+    parser.add_argument('--fold', type=int)
     parser.add_argument('--n_vars', type=int)
     parser.add_argument('--n_facs', type=int)
     parser.add_argument('--batch_size', type=int)
@@ -305,8 +306,13 @@ if __name__ == '__main__':
     dir_data = os.path.join(args.dir_out_scratch, 'data')
     dir_cov = os.path.join(args.dir_out_scratch, 'cov-dssgd')
     dir_bench = os.path.join(args.dir_out, 'bench')
-    path_init = os.path.join(args.dir_out, f'init-loads-{args.split}.pt')
-    path_model = os.path.join(args.dir_out, f'model-dssgd-{args.split}.pth')
+    fname_init = f'init-loads-{args.split}'
+    fname_model = f'model-dssgd-{args.split}'
+    if args.split != 'full': 
+        fname_init += f'-{args.fold}'
+        fname_model += f'-{args.fold}'
+    path_init = os.path.join(args.dir_out, f'{fname_init}.pt')
+    path_model = os.path.join(args.dir_out, f'{fname_model}.pth')
     other_bench_path = os.path.join(dir_bench, 'other-dssgd.csv')
     suffix = args.dir_out.split('out/')[-1].replace('/', '_')
     path_shared = os.path.join(config.dir_shared, f'shared_{suffix}')
@@ -319,7 +325,7 @@ if __name__ == '__main__':
 
 
     # ---------- ESTIMATION ---------- #
-    print("Fitting model...")
+    print("Fitting model...", flush=True)
 
     remove_file(path_shared)
     processes = []
@@ -331,6 +337,7 @@ if __name__ == '__main__':
                 'dir_out': args.dir_out,
                 'dir_out_scratch': args.dir_out_scratch,
                 'split': args.split,
+                'fold': args.fold,
                 'n_vars': args.n_vars,
                 'n_facs': args.n_facs,
                 'batch_size': args.batch_size,

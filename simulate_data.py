@@ -7,7 +7,7 @@ import torch
 from abc import ABC, abstractmethod
 from functools import partial
 from scipy.interpolate import BSpline, splrep
-from typing import Callable, List, Optional, Sequence, Tuple, Union
+from typing import Callable, List, Sequence, Tuple, Union
 
 from config import load_config
 from utils import (
@@ -37,7 +37,19 @@ def basis_expansion(basis: Union[torch.Tensor], coeffs: torch.Tensor, ndim: int)
     else: 
         raise NotImplementedError 
     return (coeffs * basis).sum(dim=1).to_dense()
-    
+
+
+def sample_from_uniform(
+        n: int, 
+        val_min: int, 
+        val_max: int, 
+        gen: torch.Generator
+    ) -> torch.Tensor:
+    samps = torch.rand(n, generator=gen)
+    samps *= (val_max - val_min)
+    samps += val_min
+    return samps
+
 
 class SineFunction1D(object):
 
@@ -340,6 +352,86 @@ class EdgePairLoading2D2(LoadingFunction):
     ]
 
 
+class TrioLoading2D1(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.1, 0.1], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.9, 0.9], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.3, 0.7], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D2(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.3, 0.1], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.7, 0.9], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.7, 0.5], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D3(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.5, 0.1], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.5, 0.9], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.3, 0.5], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D4(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.7, 0.1], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.3, 0.9], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.3, 0.3], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D5(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.9, 0.1], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.1, 0.9], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.7, 0.7], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D6(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.9, 0.3], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.1, 0.7], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.5, 0.7], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D7(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.9, 0.5], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.1, 0.5], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.5, 0.3], 0, [0.2, 0.2], 1),
+    ]
+
+
+class TrioLoading2D8(LoadingFunction):
+
+    ndim = 2
+    pieces = [
+        BumpFunction2D([0.9, 0.7], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.1, 0.3], 0, [0.1, 0.1], 1),
+        BumpFunction2D([0.7, 0.3], 0, [0.2, 0.2], 1),
+    ]
+
+
 class DefaultNetLoading2D(LoadingFunction):
 
     ndim = 2
@@ -427,9 +519,9 @@ class CornerPairLoading3D4(LoadingFunction):
 # -------------------- Loading Schemes -------------------- #
     
 class LoadingScheme(ABC):
-    """Base class for LoadingSchemes which use `loading_fcns` and `scales` to 
-    build a set of scaled loading functions. When called, a LoadingScheme 
-    realizes itself on a grid defined by `points`."""
+    """Base class for LoadingSchemes which use `loading_fcns` to build a set 
+    of unit-norm loading functions. When called, a LoadingScheme realizes 
+    itself on a grid defined by `points`."""
 
     def __init__(self, n_fcns: int) -> None:
 
@@ -438,8 +530,6 @@ class LoadingScheme(ABC):
                              f"There are {len(self.loading_fcns)} available."))
         if not self._compatible_fcns():
             raise Exception("Loading functions do not having matching dimensions!")
-        if not len(self.loading_fcns) == len(self.scales):
-            raise Exception("Number of loading functions differs from number of scales!")
         
         self.n_fcns = n_fcns
 
@@ -447,17 +537,13 @@ class LoadingScheme(ABC):
         vals = torch.zeros(self.n_fcns, len(points), dtype=torch.float32)
         for k in range(self.n_fcns):
             fcn = self.loading_fcns[k]()
-            vals[k] = fcn(points) * self.scales[k]
+            vals[k] = fcn(points)
+            vals[k] /= torch.norm(vals[k])  # scale to unit norm
         return vals
 
     @property
     @abstractmethod
     def loading_fcns(self):
-        pass
-
-    @property
-    @abstractmethod
-    def scales(self):
         pass
 
     @property
@@ -479,7 +565,6 @@ class TrigLoadingScheme1D(LoadingScheme):
         SineLoading1D, 
         CosineLoading1D
     ]
-    scales = [1, 1]
 
 
 class BumpLoadingScheme1D(LoadingScheme):
@@ -489,7 +574,6 @@ class BumpLoadingScheme1D(LoadingScheme):
         BumpPairLoading1D1, 
         BumpPairLoading1D2
     ]
-    scales = [1, 1]
 
 
 class BumpLoadingScheme2D(LoadingScheme):
@@ -501,7 +585,21 @@ class BumpLoadingScheme2D(LoadingScheme):
         EdgePairLoading2D1,
         EdgePairLoading2D2
     ]
-    scales = [1, 1, 1, 1]
+
+
+class BumpTrioLoadingScheme2D(LoadingScheme):
+
+    ndim = 2
+    loading_fcns = [
+        TrioLoading2D1,
+        TrioLoading2D2,
+        TrioLoading2D3,
+        TrioLoading2D4,
+        TrioLoading2D5,
+        TrioLoading2D6,
+        TrioLoading2D7,
+        TrioLoading2D8,
+    ]
 
 
 class NetLoadingScheme2D(LoadingScheme):
@@ -513,7 +611,6 @@ class NetLoadingScheme2D(LoadingScheme):
         RightVisualNetLoading2D,
         LeftVisualNetLoading2D,
     ]
-    scales = [1, 1, 1, 1]
         
 
 class BumpLoadingScheme3D(LoadingScheme):
@@ -525,7 +622,6 @@ class BumpLoadingScheme3D(LoadingScheme):
         CornerPairLoading3D3,
         CornerPairLoading3D4
     ]
-    scales = [1, 1, 1, 1]
 
 
 LOADING_SCHEMES = {
@@ -534,6 +630,7 @@ LOADING_SCHEMES = {
 
     'BumpScheme1D': BumpLoadingScheme1D,
     'BumpScheme2D': BumpLoadingScheme2D,
+    'BumpTrioScheme2D': BumpTrioLoadingScheme2D,
     'BumpScheme3D': BumpLoadingScheme3D,
 
     'NetScheme2D': NetLoadingScheme2D,
@@ -610,7 +707,6 @@ class BSplinePinnedBasicFS(BSplineBasicFS):
             self.n_fcns = n_fcns
 
 
-# TODO: This doesn't play nicely with batching
 class GaussianProcessBasicFS(BasicFunctionSet):
 
     def __init__(
@@ -666,8 +762,38 @@ class Bump1DBasicFS(BasicFunctionSet):
             width: float
         ) -> None:
         super().__init__(domain_range=domain_range, n_fcns=n_fcns)
-        centers = torch.linspace(0, 1, n_fcns, dtype=torch.float32)
+        centers = torch.linspace(width/2, 1 - width, n_fcns, dtype=torch.float32)
+        # centers = torch.rand(n_fcns, dtype=torch.float32) * (1 - width - width/2) + width/2 # TODO: Pass generator!
         self.fcns = [BumpFunction1D(c.item(), width / 2, 1) for c in centers]
+
+    def __call__(
+            self, 
+            eval_points: torch.Tensor
+        ) -> torch.Tensor:
+        out = torch.zeros((self.n_fcns, len(eval_points)), dtype=torch.float32)
+        for j in range(self.n_fcns):
+            out[j] = self.fcns[j](eval_points)
+        return out
+
+
+
+class Bump2DBasicFS(BasicFunctionSet):
+
+    def __init__(
+            self, 
+            domain_range: List[float],
+            n_fcns: int, 
+            width: float
+        ) -> None:
+        super().__init__(domain_range=domain_range, n_fcns=n_fcns, ndim=2)
+        sqrt_n_fcns = int(math.sqrt(n_fcns))
+        if sqrt_n_fcns * sqrt_n_fcns != n_fcns: 
+            raise Exception("n_fcns must be a square!")
+        # centers = torch.linspace(0, 1 - width/2, sqrt_n_fcns, dtype=torch.float32)
+        # centers = torch.cartesian_prod(centers, centers)
+        # centers = torch.rand(n_fcns, 2, dtype=torch.float32) * (1 - width/2)  # used for sim-est-0-bump
+        centers = torch.rand(n_fcns, 2, dtype=torch.float32) * (1 - width) + width/2
+        self.fcns = [BumpFunction2D(centers[i].tolist(), 0, [width/2, width/2], 1) for i in range(len(centers))]
 
     def __call__(
             self, 
@@ -770,10 +896,6 @@ class TensorBasicFS(BasicFunctionSet):
 # # (`scale_min`, `scale_mix`) from which to draw `n_fcns` scaling factors. 
 
 class ErrorScheme(ABC):
-    """ErrorSchemes are defined by `fset_space`, `fset_time`, `scale_min` and
-    `scale_max`. When `points_space` and `points_time` are passed to the 
-    `__call__ method, scaled spatial and temporal values of the function sets
-    are returned."""
         
     def __init__(
             self, 
@@ -796,11 +918,6 @@ class ErrorScheme(ABC):
         self.n_fcns = self.fset_space.n_fcns
         self.ndim = self.fset_space.ndim + 1
 
-        # Generate coefficients for functions in tensor product set
-        self.coeffs = torch.rand(self.n_fcns, generator=gen, dtype=torch.float32)
-        self.coeffs *= (self.scale_max - self.scale_min)
-        self.coeffs += self.scale_min
-
     def __call__(
             self, 
             points_space: torch.Tensor,
@@ -809,7 +926,6 @@ class ErrorScheme(ABC):
         ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         # Build vals_space (n_fcns-by-n_space; sparse)
-        # vals_space = self.fset_space(points_space).to_sparse()
         indices_list = []
         values_list = []
         n_points = len(points_space)
@@ -830,31 +946,27 @@ class ErrorScheme(ABC):
             # Update start_idx
             start_idx += sz
 
-        # Create sparse tensor
+        # Aggregate indices and values
         indices = torch.cat(indices_list, dim=1)
         values = torch.cat(values_list)
+
+        # Normalize each function's values
+        row_indices = indices[0]
+        row_squared_sums = torch.zeros(self.n_fcns).index_add_(
+            0, row_indices, values ** 2
+        )
+        row_norms = torch.sqrt(row_squared_sums)
+        row_norms = torch.clamp(row_norms, min=1e-12)
+        norm_scales = row_norms[row_indices]
+        values = values / norm_scales
+
+        # Create sparse tensor
         sz = [self.n_fcns, len(points_space)]
         vals_space = torch.sparse_coo_tensor(indices, values, sz)
 
         # Build vals_time (n_fcns-by-n_time; dense)
+        # NOTE: child classes must ensure fset_time is of proper scale
         vals_time = self.fset_time(points_time)
-
-        # Normalize then scale each error function
-        # Ex: Consider function j and suppose (M, T) = (10, 3) and 
-        #   vals_space[j] = [s_1, s_2] --> recall sparse spatial structure
-        #   vals_time[j] = [t_1, t_2, t_3]
-        # Then the norm of the jth function is given by
-        #   norm_j^2 = sum_i (sum_k (s_i * t_k)^2) / M*T
-        #            = sum_i s_i^2 (sum_k t_k^2) / M*T
-        for j in range(self.n_fcns):
-            
-            # Compute the norm of the jth function
-            norm = torch.sum((vals_space[j] ** 2) * torch.sum(vals_time[j] ** 2))
-            norm = norm / len(points_space) / self.n_time
-            norm = torch.sqrt(norm)
-
-            # Normalize and scale the jth function via vals_time
-            vals_time[j] = vals_time[j] / norm * self.coeffs[j]
 
         return vals_space, vals_time
 
@@ -866,25 +978,11 @@ class ErrorScheme(ABC):
     def get_fset_time(self) -> BasicFunctionSet:
         pass
 
-    @property
-    @abstractmethod
-    def scale_min(self):
-        pass
-
-    @property
-    @abstractmethod
-    def scale_max(self):
-        pass
-
 
 # NOTE: Naming convention for error schemes is as follows:
 #           <temporal-fset>_<spatial-fset><ndim_space>D_ErrorScheme
 
-
 class GaussProc_Bump1D_ErrorScheme(ErrorScheme):
-
-    scale_min = 0.1
-    scale_max = 1
 
     def get_fset_space(self):
         return Bump1DBasicFS(
@@ -904,13 +1002,10 @@ class GaussProc_Bump1D_ErrorScheme(ErrorScheme):
 
 class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
 
-    scale_min = 0.1
-    scale_max = 1
-
     def get_fset_space(self):
         fset = Bump1DBasicFS(
             domain_range=[0, 1], 
-            n_fcns=20, 
+            n_fcns=30, 
             width=self.width_space
         )
         return TensorBasicFS([fset, fset])
@@ -918,16 +1013,31 @@ class GaussProc_BumpTensor2D_ErrorScheme(ErrorScheme):
     def get_fset_time(self):
         return GaussianProcessBasicFS(
             domain_range=[1, self.n_time],
-            n_fcns=400,
+            n_fcns=900,
+            kernel=self.kernel,
+            gen=self.gen
+        )
+
+
+class GaussProc_Bump2D_ErrorScheme(ErrorScheme):
+
+    def get_fset_space(self):
+        return Bump2DBasicFS(
+            domain_range=[0, 1], 
+            n_fcns=900, 
+            width=self.width_space
+        )
+
+    def get_fset_time(self):
+        return GaussianProcessBasicFS(
+            domain_range=[1, self.n_time],
+            n_fcns=900,
             kernel=self.kernel,
             gen=self.gen
         )
     
 
 class GaussProc_BumpTensor3D_ErrorScheme(ErrorScheme):
-
-    scale_min = 0.1
-    scale_max = 1
 
     def get_fset_space(self):
         fset = Bump1DBasicFS(
@@ -948,9 +1058,6 @@ class GaussProc_BumpTensor3D_ErrorScheme(ErrorScheme):
 
 class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
 
-    scale_min = 0.1
-    scale_max = 1
-
     def get_fset_space(self):
         return BSplinePinned1DBasicFS(
             domain_range=[0, 1],
@@ -969,9 +1076,6 @@ class GaussProc_BSplinePinned1D_ErrorScheme(ErrorScheme):
 
 
 class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
-
-    scale_min = 0.1
-    scale_max = 1
 
     def get_fset_space(self):
         fset = BSplinePinned1DBasicFS(
@@ -992,9 +1096,6 @@ class GaussProc_BSplinePinnedTensor2D_ErrorScheme(ErrorScheme):
     
 
 class GaussProc_BSplinePinnedTensor3D_ErrorScheme(ErrorScheme):
-
-    scale_min = 0.1
-    scale_max = 1
 
     def get_fset_space(self):
         fset = BSplinePinned1DBasicFS(
@@ -1022,6 +1123,7 @@ ERROR_SCHEMES = {
 
     # 2-dimensional
     'GaussProc_BumpTensor2D': GaussProc_BumpTensor2D_ErrorScheme,
+    'GaussProc_Bump2D': GaussProc_Bump2D_ErrorScheme,
     'GaussProc_BSplinePinnedTensor2D': GaussProc_BSplinePinnedTensor2D_ErrorScheme,
 
     # 3-dimensional
@@ -1030,6 +1132,23 @@ ERROR_SCHEMES = {
 
 }
  
+
+# ---------- REGIMES ---------- #
+
+REGIMES = {
+    1: {
+        'local': [0.1, 1],
+        'global': [2, 3],
+    },
+    2: {
+        'local': [0.1, 1],
+        'global': [0.8, 1.8],
+    },
+    3: {
+        'local': [0.1, 1],
+        'global': [0.1, 1],
+    },
+}
 
 
 # ---------- MAIN FUNCTIONS ---------- #
@@ -1086,7 +1205,6 @@ def simulate_ffm_data(
         facs: torch.Tensor,
         errs_space: torch.sparse.Tensor, 
         errs_time: torch.Tensor,
-        prop_global: float,
         batch_size: int,
         gen: torch.Generator = torch.Generator(),
     ):
@@ -1111,46 +1229,9 @@ def simulate_ffm_data(
     sz_space = loads.shape[1:]
     sz_time = facs.shape[0]
     ndim_space = len(sz_space)
-    n_err_fcns = errs_space.shape[0]
-
-    # Scale error functions
-    # NOTE: By scaling each error function by a coefficient drawn from a 
-    # zero-mean distribution with unit variance, we permit a simple closed 
-    # form for the spatial error covariance which we use later. 
-    # NOTE: I originally sampled these coefficients from a standard normal 
-    # distribution. However, if coefficient j is near zero, then the 
-    # jth temporal error function will be a GP that stays near zero. Each voxel 
-    # is nonzero on very few of the J spatial error functions. If these nonzero
-    # spatial functions happen to be associated with one of the "small" 
-    # temporal error functions, then the local component will contribute
-    # very little to that voxel's observed time series. To avoid, this I
-    # instead sample from a mean-zero discrete distribution with unit variance. 
-    err_coeffs = torch.randint(0, 2, (n_err_fcns,), generator=gen) * 2 - 1
-    # err_coeffs = torch.normal(0, 1, (n_err_fcns,), dtype=torch.float32, generator=gen)
-    errs_time = errs_time * err_coeffs.view(-1, 1)
-
-    # Compute global and local l2 norms
-    global_frob = 0
-    local_frob = 0
-    global_numel = 0
-    local_numel = 0
-    for comp_global, comp_local in _gen_global_local_batches():
-        global_frob += torch.sum(comp_global ** 2).item()
-        global_numel += torch.numel(comp_global)
-        local_frob += torch.sum(comp_local ** 2).item()
-        local_numel += torch.numel(comp_local)
-    norm_global = math.sqrt(global_frob / global_numel)
-    norm_local = math.sqrt(local_frob / local_numel)
-
-    # Yield the global and local norms for scaling of "truth"
-    yield norm_global, norm_local
 
     # Yield data in desired global-to-local ratio
     for comp_global, comp_local in _gen_global_local_batches():
-        comp_global /= norm_global
-        comp_global *= prop_global
-        comp_local /= norm_local
-        comp_local *= (1 - prop_global)
         yield comp_global + comp_local
 
 
@@ -1210,8 +1291,9 @@ if __name__ == '__main__':
         help="Bandwidth of spatial error covariance."
     )
     parser.add_argument(
-        '--prop_global', type=float,
-        help="Proportion of observations coming from global component."
+        '--regime', type=int,
+        help=("Regime, corresponding to set of global-local scale ranges, used "
+              "to simulate data.")
     )
     parser.add_argument(
         '--kernel_length_fac', type=float,
@@ -1240,6 +1322,8 @@ if __name__ == '__main__':
     gen = torch.Generator().manual_seed(args.seed)
     load_scheme = LOADING_SCHEMES[args.load_scheme](args.n_facs)
     sz = [args.n_time] + args.sz_space
+    coeff_range_glob = REGIMES[args.regime]['global']
+    coeff_range_loc = REGIMES[args.regime]['local']
 
     # Check for `load_scheme` and `sz_space` compatibility
     if load_scheme.ndim != len(args.sz_space):
@@ -1254,6 +1338,9 @@ if __name__ == '__main__':
         fac_cov = torch.load(args.path_fac_cov)
         if args.n_facs != fac_cov.shape[0]:
             msg = "Dimension of factor covariance must match the number of factors!"
+            raise Exception(msg)
+        if not torch.equal(torch.diag(fac_cov), torch.ones(fac_cov.shape[0])):
+            msg = "All diagonal entries of factor covariance must be one!"
             raise Exception(msg)
 
         # Compute factor covariance square root
@@ -1277,7 +1364,7 @@ if __name__ == '__main__':
     indices_space_list = []
     for sz_ in args.sz_space:
         indices_ = torch.arange(sz_, dtype=torch.int32)
-        points_ = indices_.to(torch.float32) / sz_
+        points_ = indices_.to(torch.float32) / sz_ + (1 / (2 * sz_))
         indices_space_list.append(indices_)
         points_space_list.append(points_)
     indices_space = torch.cartesian_prod(*indices_space_list)  # M-by-ndim_space
@@ -1306,6 +1393,13 @@ if __name__ == '__main__':
     else: 
         vals = load_scheme(points_space)  # n_facs-by-sz_shape
         loads = build_loadings(indices_space, args.sz_space, vals) 
+        coeffs = sample_from_uniform(
+            args.n_facs, 
+            coeff_range_glob[0],
+            coeff_range_glob[1],
+            gen
+        )
+        loads = loads * coeffs.view(-1, *[1] * len(args.sz_space))
         torch.save(loads, path)
     n_vars = multiply_list(loads.shape[1:])
 
@@ -1328,6 +1422,7 @@ if __name__ == '__main__':
             errs_space = torch.load(path_space)
             errs_time = torch.load(path_time)
         else: 
+
             err_scheme = ERROR_SCHEMES[args.err_scheme](
                 width_space=args.delta, 
                 n_time=args.n_time, 
@@ -1338,10 +1433,23 @@ if __name__ == '__main__':
                 msg = ("Number of error scheme dimensions does not match the "
                        "number of spatiotemporal dimensions!")
                 raise Exception(msg) 
-            vals_space, errs_time = err_scheme(points_space, points_time)  
+            vals_space, errs_time = err_scheme(points_space, points_time) 
+
+            # Scale spatial values by coefficients 
+            coeffs = sample_from_uniform(
+                vals_space.shape[0], 
+                coeff_range_loc[0],
+                coeff_range_loc[1],
+                gen
+            )
+            indices = vals_space._indices()
+            values = vals_space._values()
+            batch_indices = indices[0]
+            values = values * coeffs[batch_indices]
+            vals_space = torch.sparse_coo_tensor(indices, values, vals_space.shape)
+
+            # Final build
             errs_space = build_errors(indices_space, args.sz_space, vals_space)
-            # torch.save(errs_space, path_space)
-            # torch.save(errs_time, path_time)
 
 
         # ---------- DATA SIMULATION ---------- #
@@ -1352,11 +1460,10 @@ if __name__ == '__main__':
             facs,
             errs_space,
             errs_time,
-            args.prop_global,
             args.batch_size,
             gen=gen
         )
-        norm_global, norm_local = next(dataloader)
+        # norm_global, norm_local = next(dataloader)
         write_generated_tensor(dataloader, args.dir_dataset, f'data_n-{n}')
 
         # Write (properly scaled) tensors
@@ -1367,7 +1474,7 @@ if __name__ == '__main__':
         #   `loads` and `errs`, but these quantities scaled by the aforementioned
         #   factors. 
         torch.save(
-            facs * args.prop_global / norm_global, 
+            facs, # * args.prop_global / norm_global, 
             os.path.join(args.dir_out, f'facs_n-{n}_.pt')
         )
         errs_space = reshape_sparse_coo_tensor(errs_space, [errs_space.size(0), n_vars])
@@ -1376,7 +1483,7 @@ if __name__ == '__main__':
             os.path.join(args.dir_out, f'errs-space_n-{n}_.pt')
         )
         torch.save(
-            errs_time * (1 - args.prop_global) / norm_local, 
+            errs_time, # * (1 - args.prop_global) / norm_local, 
             os.path.join(args.dir_out, f'errs-time_n-{n}_.pt')
         )
     

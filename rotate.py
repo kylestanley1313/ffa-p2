@@ -1,73 +1,11 @@
 import argparse
-import numpy as np
 import os
+import pandas as pd
+import subprocess
 import torch
 
 from config import load_config
-
-
-
-# NOTE: Copied from https://github.com/EducationalTestingService/factor_analyzer/blob/main/factor_analyzer/rotator.py
-#       Installation of factor_analyzer was taking too long
-def varimax(loadings, max_iter, tol, normalize=False):
-        """
-        Perform varimax (orthogonal) rotation, with optional Kaiser normalization.
-        """
-        X = loadings.copy()
-        n_rows, n_cols = X.shape
-        if n_cols < 2:
-            return X
-
-        # normalize the loadings matrix
-        # using sqrt of the sum of squares (Kaiser)
-        if normalize:
-            normalized_mtx = np.apply_along_axis(
-                lambda x: np.sqrt(np.sum(x**2)), 1, X.copy()
-            )
-            X = (X.T / normalized_mtx).T
-
-        # initialize the rotation matrix
-        # to N x N identity matrix
-        rotation_mtx = np.eye(n_cols)
-
-        d = 0
-        for _ in range(max_iter):
-            old_d = d
-
-            # take inner product of loading matrix
-            # and rotation matrix
-            basis = np.dot(X, rotation_mtx)
-
-            # transform data for singular value decomposition using updated formula :
-            # B <- t(x) %*% (z^3 - z %*% diag(drop(rep(1, p) %*% z^2))/p)
-            diagonal = np.diag(np.squeeze(np.repeat(1, n_rows).dot(basis**2)))
-            transformed = X.T.dot(basis**3 - basis.dot(diagonal) / n_rows)
-
-            # perform SVD on
-            # the transformed matrix
-            U, S, V = np.linalg.svd(transformed)
-
-            # take inner product of U and V, and sum of S
-            rotation_mtx = np.dot(U, V)
-            d = np.sum(S)
-
-            # check convergence
-            if d < old_d * (1 + tol):
-                break
-
-        # take inner product of loading matrix
-        # and rotation matrix
-        X = np.dot(X, rotation_mtx)
-
-        # de-normalize the data
-        if normalize:
-            X = X.T * normalized_mtx
-        else:
-            X = X.T
-
-        # convert loadings matrix to data frame
-        loadings = X.T.copy()
-        return loadings, rotation_mtx
+from utils import model_from_loads, refresh_directory, remove_directory
 
 
 
@@ -75,25 +13,73 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=str)
-    parser.add_argument('--est_method_loads', type=str)
-    parser.add_argument('--split', type=str)
     parser.add_argument('--dir_out', type=str)
-    parser.add_argument('--max_iter', type=int, default=1000)
-    parser.add_argument('--tol', type=float, default=1e-3)
+    parser.add_argument(
+        '--rot_method', type=str, 
+        choices=['varimax', 'quartimin'],
+        required=True
+    )
+    parser.add_argument('--file_trg', type=str)
+    parser.add_argument('--est_method', type=str)
+    parser.add_argument('--split', type=str, choices=['full', 'train'])
+    parser.add_argument('--fold', type=int)
     args = parser.parse_args()
 
     config = load_config(args.config)
 
-    # Set input/output paths
-    f_in = f'model-{args.est_method_loads}-{args.split}.pth'
-    f_out = f'model-{args.est_method_loads}-{args.split}-rot.pth'
-    path_in = os.path.join(args.dir_out, f_in)
-    path_out = os.path.join(args.dir_out, f_out)
+    # Commandline argument parsing
+    target = True if args.file_trg else False
+    split_str = 'full' if args.split == 'full' else f'{args.split}-{args.fold}'
 
-    # Rotate
-    model = torch.load(path_in)
-    loads = model['loads'].numpy()
-    loads_rot, _ = varimax(loads, args.max_iter, args.tol)
-    model['loads'] = torch.from_numpy(loads_rot)
-    torch.save(model, path_out)
+    # Path preparation
+    dir_tmp = os.path.join(args.dir_out, 'tmp-rot')
+    refresh_directory(dir_tmp)
+    path_in = os.path.join(args.dir_out, f'model-{args.est_method}-{split_str}.pth') 
+    path_in_csv = os.path.join(dir_tmp, f'loads-{args.est_method}-{split_str}.csv.gz') 
+    path_rot = os.path.join(args.dir_out, f'rot-{args.rot_method}-{split_str}.pt')
+    path_rot_csv = os.path.join(dir_tmp, f'rot-{args.rot_method}-{split_str}.csv.gz')
+    path_out = os.path.join(args.dir_out, f'model-{args.est_method}-{split_str}-{args.rot_method}.pth') 
+    path_out_csv = os.path.join(dir_tmp, f'loads-{args.est_method}-{split_str}-{args.rot_method}.csv.gz')
+    if target: # target is always full roated loadings
+        path_trg = os.path.join(args.dir_out, args.file_trg)
+        path_trg_csv = os.path.join(args.dir_out, dir_tmp, args.file_trg.replace('model-', 'loads-').replace('.pth', '.csv.gz'))
+
+    # Read loadings from .pth
+    loads = pd.DataFrame(torch.load(path_in)['loads'].numpy())
+    loads.to_csv(path_in_csv, header=False, index=False)
+    if target:
+        loads_trg = pd.DataFrame(torch.load(path_trg)['loads'].numpy())
+        loads_trg.to_csv(path_trg_csv, header=False, index=False)
+
+    # Call R script (rotates then writes to .csv)
+    kwargs = {
+        'path_in': path_in_csv,
+        'path_out': path_out_csv,
+        'path_rot': path_rot_csv,
+        'rot_method': args.rot_method,
+    }
+    if target:
+        kwargs['path_trg'] = path_trg_csv
+    command = ['Rscript', f'{config.root}/rotate.R'] + [f"--{k}={v}" for k, v in kwargs.items()]
+    try:
+        result = subprocess.run(command, check=True, capture_output=True, text=True)
+        print("R script output:\n", result.stdout)
+    except subprocess.CalledProcessError as e:
+        print("R script error:\n", e.stderr)
+
+    # Read rotation and rotated loadings from .csv
+    loads_rot = torch.from_numpy(
+        pd.read_csv(path_out_csv, header=None, index_col=None).values
+    ).to(torch.float32)
+    rot_mat = torch.from_numpy(
+        pd.read_csv(path_rot_csv, header=None, index_col=None).values
+    ).to(torch.float32)
+
+    # Write rotated loadings to .pth
+    model = model_from_loads(loads_rot)
+    torch.save(model.state_dict(), path_out)
+    torch.save(rot_mat, path_rot)
+
+    # Clean up CSVs
+    remove_directory(dir_tmp)
 

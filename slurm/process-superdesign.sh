@@ -31,6 +31,7 @@ step=""
 superdesign=""
 methods_le=""
 methods_fse=""
+rotations=""
 regimes_fse=""
 last_step=""
 for arg in "$@"; do
@@ -49,6 +50,10 @@ for arg in "$@"; do
       ;;
     --methods-fse=*)
       methods_fse="${arg#*=}"
+      shift
+      ;;
+    --rotations=*)
+      rotations="${arg#*=}"
       shift
       ;;
     --regimes-fse=*)
@@ -90,8 +95,8 @@ while DESIGNS= read -r design; do
     CMD+=" --design=$design"
     CMD+=" --methods-le=$methods_le"
     CMD+=" --methods-fse=$methods_fse"
+    CMD+=" --rotations=$rotations"
     CMD+=" --regimes-fse=$regimes_fse"
-    # CMD+=" $1 $design $3 $4 $5"
 
     # Run design script
     echo "Running: $CMD"

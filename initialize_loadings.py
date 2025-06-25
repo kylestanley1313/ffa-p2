@@ -3,7 +3,7 @@ import numpy as np
 import os
 import torch
 from sklearn.decomposition import PCA
-from typing import Generator
+from typing import Generator, List
 
 from config import load_config
 from utils import (
@@ -27,17 +27,18 @@ class PCALoadingInitializer(object):
         self.init_prop = init_prop
         self.gen = generator
 
-    def __call__(self, dataloader: Generator) -> torch.Tensor:
+    def __call__(self, dataloaders: List[Generator]) -> torch.Tensor:
         
         # Read in (possibly subsampled) data
         data = []
         n = 0
-        for batch in dataloader:
-            n_batch = len(batch)
-            num_to_keep = int(n_batch * self.init_prop)
-            idx = torch.randperm(n_batch, generator=self.gen)
-            data.append(batch[idx[:num_to_keep]])
-            n += num_to_keep
+        for dataloader in dataloaders:
+            for batch in dataloader:
+                n_batch = len(batch)
+                num_to_keep = int(n_batch * self.init_prop)
+                idx = torch.randperm(n_batch, generator=self.gen)
+                data.append(batch[idx[:num_to_keep]])
+                n += num_to_keep
         data = torch.cat(data)
 
         # Prepare PCA estimator
@@ -52,7 +53,7 @@ class PCALoadingInitializer(object):
             np.diag(pca.singular_values_) / np.sqrt(n - 1),
             pca.components_
         )
-        loads = torch.tensor(loads, dtype=torch.float64)
+        loads = torch.tensor(loads, dtype=torch.float32)
 
         return loads.t().contiguous()
 
@@ -63,47 +64,57 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--split', type=str, choices=['full', 'train', 'valid'])
+    parser.add_argument('--split', type=str, choices=['full', 'train'])
+    parser.add_argument('--fold', type=int)
+    parser.add_argument('--n_folds', type=int)
     parser.add_argument('--n_facs', type=int)
     parser.add_argument(
         '--init_method', type=str, 
         choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
     )
+    parser.add_argument('--rand_scale', type=float, default=0.1)
     parser.add_argument('--prop_init', type=float, default=1.0)
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
     
     config = load_config(args.config)
+
+    # Prepare paths
     dir_data = os.path.join(args.dir_out_scratch, 'data')
-    dir_bench = os.path.join(args.dir_out, 'bench')
-    path_init = os.path.join(args.dir_out, f'init-loads-{args.split}.pt')
-    path_other_bench = os.path.join(dir_bench, 'other-dsgd.csv')
-    gen = torch.Generator().manual_seed(args.seed)
+    fname_init = f'init-loads-{args.split}'
+    if args.split != 'full': 
+        fname_init += f'-{args.fold}'
+    path_init = os.path.join(args.dir_out, f'{fname_init}.pt')
 
 
     print("Initializing loadings...")
+    gen = torch.Generator().manual_seed(args.seed)
     pca_svd_solvers = {
         'pca_full': 'full',
         'pca_arpack': 'arpack',
         'pca_randomized': 'randomized'
     }
     if args.init_method == 'random':
-        path = os.path.join(args.dir_out_scratch, 'data', 'data-time_split-full_i-0_.pt')
+        path = os.path.join(args.dir_out_scratch, 'data', 'data-time_split-full_n-0_i-0_.pt')
         n_vars = torch.load(path).shape[1]
-        loads = torch.randn(n_vars, args.n_facs, generator=gen, dtype=torch.float64)
+        loads = args.rand_scale * torch.randn(n_vars, args.n_facs, generator=gen, dtype=torch.float32)
     else:
-        dataloader = gen_tensors(
-            dir_data, 
-            f'data-time_split-{args.split}_', 
-            sort_by=('i', int)
-        )
+        
+        # Get dataloaders
+        dataloaders = []
+        for v in range(args.n_folds):
+            prefix = f'data-time_v-{v}_'
+            dataloaders.append(gen_tensors(dir_data, f'data-time_v-{v}_'))
+    
+        # Initialize 
         initializer = PCALoadingInitializer(
             pca_svd_solvers[args.init_method], 
             args.n_facs, 
             args.prop_init, 
             generator=gen
         )
-        loads = initializer(dataloader)
+        loads = initializer(dataloaders)
+
     torch.save(loads, path_init)
 
     print("DONE!")

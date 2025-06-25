@@ -2,7 +2,9 @@ import argparse
 import nibabel as nib
 import numpy as np
 import os
+import shutil
 import subprocess
+import sys
 import torch
 
 from typing import Optional
@@ -12,14 +14,14 @@ from config import load_config
 
 
 def run_subprocess(args):
-    try:
-        proc = subprocess.run(args, capture_output=True, check=True, text=True)
+    proc = subprocess.run(args, capture_output=True, check=True, text=True)
+    if len(proc.stderr) > 0:
+        print(proc.stderr, file=sys.stderr)
+        return 1
+    else: 
         print(proc.stdout)
-    except subprocess.CalledProcessError as err: 
-        print(f"returncode = {err.returncode} "
-              f"stderr = {err.stderr} "
-              f"stdout = {err.stdout}")
-        # TODO: Add exit code
+        return 0
+
 
 
 def run(
@@ -72,9 +74,14 @@ def run(
         '--varnorm',
         '--maxit=1000',
         '-d', str(n_comps),
-        '--seed=12346'
+        '--seed=12345'
     ]
-    run_subprocess(args)
+    code = run_subprocess(args)
+
+    # Handle MELODIC error
+    if code != 0:
+        shutil.rmtree(dir_ica) 
+        sys.exit(code)
 
     # Extract results
     # NOTE: These MELODIC outputs appear to be on the same scale as the true 
@@ -84,13 +91,6 @@ def run(
     comps = nib.load(path).get_fdata().astype(np.float32)
     path = os.path.join(dir_ica, 'melodic_mix')
     mix_mat = np.loadtxt(path).astype(np.float32)
-
-    # print(f"comps.shape = {comps.shape}")
-    # path = os.path.join(dir_ica, 'melodic_pca.nii.gz')
-    # tmp = nib.load(path).get_fdata().astype(np.float32)
-    # print(f"tmp.shape = {tmp.shape}")
-
-
 
     # Write results
     method = 'ica' if sigma is None else 'icas' 

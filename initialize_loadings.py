@@ -1,0 +1,121 @@
+import argparse
+import numpy as np
+import os
+import torch
+from sklearn.decomposition import PCA
+from typing import Generator, List
+
+from config import load_config
+from utils import (
+    gen_seeds,
+    gen_tensors,
+)
+
+
+
+class PCALoadingInitializer(object):
+
+    def __init__(
+            self, 
+            method: str, 
+            num_facs: int, 
+            init_prop: float, 
+            generator: torch.Generator = torch.Generator()
+        ) -> None:
+        self.method = method
+        self.num_facs = num_facs
+        self.init_prop = init_prop
+        self.gen = generator
+
+    def __call__(self, dataloaders: List[Generator]) -> torch.Tensor:
+        
+        # Read in (possibly subsampled) data
+        data = []
+        n = 0
+        for dataloader in dataloaders:
+            for batch in dataloader:
+                n_batch = len(batch)
+                num_to_keep = int(n_batch * self.init_prop)
+                idx = torch.randperm(n_batch, generator=self.gen)
+                data.append(batch[idx[:num_to_keep]])
+                n += num_to_keep
+        data = torch.cat(data)
+
+        # Prepare PCA estimator
+        seed = gen_seeds(self.gen, 1)
+        pca = PCA(self.num_facs, svd_solver=self.method, random_state=seed)
+
+        # Initialize loadings then write to file
+        # NOTE: If X = USV^T, then covariance is
+        #           C = 1/(n-1) X^TX = V(S^2 / (n-1)) V^T
+        pca.fit(data)
+        loads = np.matmul(
+            np.diag(pca.singular_values_) / np.sqrt(n - 1),
+            pca.components_
+        )
+        loads = torch.tensor(loads, dtype=torch.float32)
+
+        return loads.t().contiguous()
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str)
+    parser.add_argument('--dir_out', type=str)
+    parser.add_argument('--dir_out_scratch', type=str)
+    parser.add_argument('--split', type=str, choices=['full', 'train'])
+    parser.add_argument('--fold', type=int)
+    parser.add_argument('--n_folds', type=int)
+    parser.add_argument('--n_facs', type=int)
+    parser.add_argument(
+        '--init_method', type=str, 
+        choices=['random', 'pca_full', 'pca_arpack', 'pca_randomized']
+    )
+    parser.add_argument('--rand_scale', type=float, default=0.1)
+    parser.add_argument('--prop_init', type=float, default=1.0)
+    parser.add_argument('--seed', type=int, default=12345)
+    args = parser.parse_args()
+    
+    config = load_config(args.config)
+
+    # Prepare paths
+    dir_data = os.path.join(args.dir_out_scratch, 'data')
+    fname_init = f'init-loads-{args.split}'
+    if args.split != 'full': 
+        fname_init += f'-{args.fold}'
+    path_init = os.path.join(args.dir_out, f'{fname_init}.pt')
+
+
+    print("Initializing loadings...")
+    gen = torch.Generator().manual_seed(args.seed)
+    pca_svd_solvers = {
+        'pca_full': 'full',
+        'pca_arpack': 'arpack',
+        'pca_randomized': 'randomized'
+    }
+    if args.init_method == 'random':
+        path = os.path.join(args.dir_out_scratch, 'data', 'data-time_split-full_n-0_i-0_.pt')
+        n_vars = torch.load(path).shape[1]
+        loads = args.rand_scale * torch.randn(n_vars, args.n_facs, generator=gen, dtype=torch.float32)
+    else:
+        
+        # Get dataloaders
+        dataloaders = []
+        for v in range(args.n_folds):
+            prefix = f'data-time_v-{v}_'
+            dataloaders.append(gen_tensors(dir_data, f'data-time_v-{v}_'))
+    
+        # Initialize 
+        initializer = PCALoadingInitializer(
+            pca_svd_solvers[args.init_method], 
+            args.n_facs, 
+            args.prop_init, 
+            generator=gen
+        )
+        loads = initializer(dataloaders)
+
+    torch.save(loads, path_init)
+
+    print("DONE!")
+

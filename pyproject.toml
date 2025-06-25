@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools>=42", "wheel", "torch>=2.1.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ffa-p2-priv"
+version = "0.1"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["utils"]

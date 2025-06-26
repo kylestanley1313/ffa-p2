@@ -10,6 +10,8 @@ import sys
 import torch
 import torch.distributed as dist
 import yaml
+from configparser import ConfigParser
+from collections import namedtuple
 from typing import Callable, Dict, Generator, List, Optional, Sequence, Tuple, Union
 
 from utils.model import LowRankCovariance
@@ -19,6 +21,27 @@ from utils.model import LowRankCovariance
 
 CODE_DIVERGENCE = 51
 CODE_NO_CONVERGENCE = 52
+
+
+# -------------------- CONFIG -------------------- #
+
+def load_config(config_name, path_config=None):
+    """Load the specified config section as a namedtuple."""
+    # Default location is config.ini in the same directory as this file
+    if path_config is None:
+        path_config = os.path.join(os.path.dirname(__file__), '..', 'config.ini')
+
+    # Parse the config file
+    parser = ConfigParser()
+    parser.read(path_config)
+
+    if config_name not in parser:
+        raise ValueError(f"Configuration '{config_name}' not found in {path_config}")
+
+    # Convert section to namedtuple
+    config_dict = dict(parser[config_name])
+    Config = namedtuple('Config', config_dict.keys())
+    return Config(**config_dict)
 
 
 # -------------------- AOMIC -------------------- #

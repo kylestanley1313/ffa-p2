@@ -4,10 +4,10 @@ import os
 import sys
 import torch
 
-from config import load_config
 from utils import (
     compute_loss, 
     execute_script, 
+    load_config,
     model_from_loads, 
     multiply_list,
 )

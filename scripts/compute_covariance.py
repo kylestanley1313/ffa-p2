@@ -5,13 +5,13 @@ import torch
 import torch.multiprocessing as mp
 from typing import List, Optional
 
-from config import load_config
 from utils import (
     flatten_dataset, 
     gen_points,
     gen_tensors,
     get_field_from_fname,
     init_process,
+    load_config,
     multiply_list, 
     read_tensors,
     remove_file,

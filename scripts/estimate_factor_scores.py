@@ -6,10 +6,10 @@ from functools import partial
 from skfda.representation.basis import Basis, BSplineBasis
 from typing import Callable
 
-from config import load_config
 from utils import (
     gen_tensors_as_arrays,
     get_generator,
+    load_config,
 )
 
 

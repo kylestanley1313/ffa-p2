@@ -4,8 +4,12 @@ import pandas as pd
 import subprocess
 import torch
 
-from config import load_config
-from utils import model_from_loads, refresh_directory, remove_directory
+from utils import (
+    load_config,
+    model_from_loads, 
+    refresh_directory, 
+    remove_directory
+)
 
 
 
@@ -60,7 +64,7 @@ if __name__ == '__main__':
     }
     if target:
         kwargs['path_trg'] = path_trg_csv
-    command = ['Rscript', f'{config.root}/rotate.R'] + [f"--{k}={v}" for k, v in kwargs.items()]
+    command = ['Rscript', f'{config.root}/scripts/rotate.R'] + [f"--{k}={v}" for k, v in kwargs.items()]
     try:
         result = subprocess.run(command, check=True, capture_output=True, text=True)
         print("R script output:\n", result.stdout)

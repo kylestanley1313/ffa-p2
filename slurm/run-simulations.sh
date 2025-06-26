@@ -15,7 +15,7 @@ echo " "
 
 # Set variables
 ROOT='/storage/home/kms8227/work/ffa-p2-priv'
-SUPERDESIGN='sim-test-3'
+SUPERDESIGN='clean-1'
 METHODS_LE='dssgd'
 METHODS_FSE='rbels' #'pls,rbels'
 ROTATIONS='varimax,quartimin'
@@ -37,16 +37,16 @@ STEPS=(
     # 'rotate'
     # 'tune-sigmas'
     # 'smooth-loadings'
-    # # # 'compute-inv-err-cov' # NOTE: GLS methods not appropriate for multiple subjects
+    # # 'compute-inv-err-cov' # NOTE: GLS methods not appropriate for multiple subjects
     # 'tune-kappas'
     # 'shrink-loadings'
     
-    'tune-gammas'
-    'estimate-factor-scores'
+    # 'tune-gammas'
+    # 'estimate-factor-scores'
 
-    # 'melodic-data-prep'
-    # 'melodic-tune-sigma'
-    # 'melodic-estimation'
+    'melodic-data-prep'
+    'melodic-tune-sigma'
+    'melodic-estimation'
 )
 
 LAST_STEP=""

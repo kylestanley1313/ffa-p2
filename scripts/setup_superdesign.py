@@ -4,8 +4,6 @@ import torch
 from utils import gen_seeds, write_yaml
 
 
-superdesign_name = 'sim-test-3'
-
 
 # superdesign = { # sim-est-2-<r>
 
@@ -73,7 +71,7 @@ superdesign_name = 'sim-test-3'
 
 # }
 
-superdesign = { # sim-test-3
+superdesign = { # sim-test-3, clean-1
 
     'n_reps': 1, #25,
     'base_seed': 12345,
@@ -943,21 +941,21 @@ abbs = {
 
 
 # Study: Subspace Estimation
-gen = torch.Generator().manual_seed(superdesign['base_seed'])
-for load_scheme in superdesign['load_scheme']:
-    for regime in superdesign['regime']:
-        for n_facs in superdesign['n_facs']:
+# gen = torch.Generator().manual_seed(superdesign['base_seed'])
+# for load_scheme in superdesign['load_scheme']:
+#     for regime in superdesign['regime']:
+#         for n_facs in superdesign['n_facs']:
 
-            design = superdesign.copy()
-            design['load_scheme'] = [load_scheme]
-            design['regime'] = [regime]
-            design['n_facs'] = [n_facs]
-            design['base_seed'] = gen_seeds(gen, 1)
+#             design = superdesign.copy()
+#             design['load_scheme'] = [load_scheme]
+#             design['regime'] = [regime]
+#             design['n_facs'] = [n_facs]
+#             design['base_seed'] = gen_seeds(gen, 1)
 
-            design_name = (f"{superdesign_name}_regime-{abbs[regime]}_loads-{abbs[load_scheme]}_K-{abbs[n_facs[0]]}")
-            print(design_name)
-            path = os.path.join('/storage/group/kms8227/default/ffa-p2-priv/designs', f'{design_name}.yml')
-            write_yaml(design, path)
+#             design_name = (f"{superdesign_name}_regime-{abbs[regime]}_loads-{abbs[load_scheme]}_K-{abbs[n_facs[0]]}")
+#             print(design_name)
+#             path = os.path.join('/storage/group/kms8227/default/ffa-p2-priv/designs', f'{design_name}.yml')
+#             write_yaml(design, path)
 # gen = torch.Generator().manual_seed(superdesign['base_seed'])
 # for n_sub in superdesign['n_sub']:
 #     for delta in superdesign['delta']:

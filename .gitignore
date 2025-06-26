@@ -1,1 +1,11 @@
 scratch/
+archive/
+designs/
+datasets/
+tmp/
+logs/
+out/
+slurm/output
+slurm/superdesigns
+*__pycache__*
+*.egg-info*

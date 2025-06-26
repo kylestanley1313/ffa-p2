@@ -2,9 +2,9 @@ import argparse
 import os
 import torch
 
-from config import load_config
 from utils import (
     execute_script, 
+    load_config,
     load_yaml, 
     multiply_list,
 )
@@ -110,7 +110,7 @@ if __name__ == '__main__':
 
     # Setup simulation files
     if 'setup-simulations' in steps:
-        path = os.path.join(config.root, 'setup_simulations.py')
+        path = os.path.join(config.root, 'scripts', 'setup_simulations.py')
         flags = {
             'config': args.config,
             'design': args.design,
@@ -140,7 +140,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} DATA SIMULATION {'='*40}\n")
         for rep in reps: 
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, 'simulate_data.py')
+            path = os.path.join(config.root, 'scripts', 'simulate_data.py')
             flags = {
                 'config': args.config,
                 'dir_dataset': rep['dir_dataset'],
@@ -174,7 +174,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} COVARIANCE COMPUTATION {'='*40}\n")
         for rep in reps: 
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, 'compute_covariance.py')
+            path = os.path.join(config.root, 'scripts', 'compute_covariance.py')
             flags = {
                 'config': args.config,
                 'dir_dataset': rep['dir_dataset'],
@@ -202,7 +202,7 @@ if __name__ == '__main__':
             print(f"\n{'-'*40} method = {method} {'-'*40}\n")
             for rep in reps:
                 print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-                path = os.path.join(config.root, 'allocate_points.py')
+                path = os.path.join(config.root, 'scripts', 'allocate_points.py')
                 flags = {
                     'config': args.config,
                     'dir_out': rep['dir_out'],
@@ -220,7 +220,7 @@ if __name__ == '__main__':
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
 
             # Path and base flags
-            path = os.path.join(config.root, f'initialize_loadings.py')
+            path = os.path.join(config.root, 'scripts', f'initialize_loadings.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -253,7 +253,7 @@ if __name__ == '__main__':
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
 
             # Path and base flags
-            path = os.path.join(config.root, f'estimate_loads_dssgd.py')
+            path = os.path.join(config.root, 'scripts', f'estimate_loads_dssgd.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -284,7 +284,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} ROTATE LOADINGS {'='*40}\n")
         for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, f'rotate.py')
+            path = os.path.join(config.root, 'scripts', f'rotate.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -310,7 +310,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} SIGMA TUNING {'='*40}\n")
         for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, f'tune_sigmas.py')
+            path = os.path.join(config.root, 'scripts', f'tune_sigmas.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -340,7 +340,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} SMOOTH LOADINGS {'='*40}\n")
         for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, f'smooth_loads.py')
+            path = os.path.join(config.root, 'scripts', f'smooth_loads.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -368,7 +368,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} KAPPA TUNING {'='*40}\n")
         for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, f'tune_kappas.py')
+            path = os.path.join(config.root, 'scripts', f'tune_kappas.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -387,7 +387,7 @@ if __name__ == '__main__':
         print(f"\n{'='*40} SHRINK LOADINGS {'='*40}\n")
         for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
-            path = os.path.join(config.root, f'shrink_loads.py')
+            path = os.path.join(config.root, 'scripts', f'shrink_loads.py')
             flags = {
                 'config': args.config,
                 'dir_out': rep['dir_out'],
@@ -416,9 +416,9 @@ if __name__ == '__main__':
 
     if 'melodic-data-prep' in steps: 
         print(f"\n{'='*40} MELODIC DATA PREP {'='*40}\n")
-        path = os.path.join(config.root, 'melodic_data_prep.py')
+        path = os.path.join(config.root, 'scripts', 'melodic_data_prep.py')
         errors = {}
-        for rep in reps:  # TODO: reps: 
+        for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
 
             flags = {
@@ -438,9 +438,9 @@ if __name__ == '__main__':
 
     if 'melodic-tune-sigma' in steps: 
         print(f"\n{'='*40} MELODIC TUNE SIGMA {'='*40}\n")
-        path = os.path.join(config.root, 'melodic_tune_sigma.py')
+        path = os.path.join(config.root, 'scripts', 'melodic_tune_sigma.py')
         errors = {}
-        for rep in reps:  # TODO: reps: 
+        for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
 
             flags = {
@@ -462,10 +462,10 @@ if __name__ == '__main__':
     
     if 'melodic-estimation' in steps: 
         print(f"\n{'='*40} MELODIC ESTIMATION {'='*40}\n")
-        path = os.path.join(config.root, 'melodic_estimation.py')
+        path = os.path.join(config.root, 'scripts', 'melodic_estimation.py')
         errors_nosmooth = {}
         errors_smooth = {}
-        for rep in reps: # TODO: reps:
+        for rep in reps:
             print(f"\n{'-'*20} {rep['id']} {'-'*20}\n")
 
             # MELODIC without smoothing
@@ -512,7 +512,7 @@ if __name__ == '__main__':
                 errors = {}
                 for rep in reps:
                     print(f"\n{'-'*20} r = {rep['id']} {'-'*20}\n")
-                    path = os.path.join(config.root, 'tune_gammas.py')
+                    path = os.path.join(config.root, 'scripts', 'tune_gammas.py')
                     flags = {
                         'config': args.config,
                         'dir_out': rep['dir_out'],
@@ -547,7 +547,7 @@ if __name__ == '__main__':
                     errors = {}
                     for rep in reps:
                         print(f"\n{'-'*20} r = {rep['id']} {'-'*20}\n")
-                        path = os.path.join(config.root, 'estimate_factor_scores.py')
+                        path = os.path.join(config.root, 'scripts', 'estimate_factor_scores.py')
                         flags = {
                             'config': args.config,
                             'dir_out': rep['dir_out'],

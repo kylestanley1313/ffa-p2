@@ -4,10 +4,10 @@ import torch
 import torch.multiprocessing as mp
 from typing import List, Tuple
 
-from config import load_config
 from utils import (
     init_process,
     gen_tensors,
+    load_config,
     refresh_directory,
     remove_file,
 )

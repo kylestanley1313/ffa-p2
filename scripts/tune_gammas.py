@@ -4,10 +4,10 @@ import sys
 import torch
 from functools import partial
 
-from config import load_config
 from utils import (
     execute_script,
     gen_tensors,
+    load_config,
 )
 
 
@@ -64,9 +64,9 @@ def compute_cv_loss_for_gammas(
     torch.save(gammas, path_gammas)
 
     # Build Execution parameters
-    path_script = os.path.join(config.root, f'estimate_factor_scores.py')
+    path_script = os.path.join(config.root, 'scripts', f'estimate_factor_scores.py')
     flags = {
-        'config': config.name,
+        'config': args.config,
         'dir_out': dir_out,
         'dir_out_scratch': dir_out_scratch,
         'est_method': 'rbels',

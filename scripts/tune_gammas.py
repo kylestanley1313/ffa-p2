@@ -24,11 +24,6 @@ def compute_loss(idx, dataloader, loads, facs):
         sz = len(data)
         idx_mask = torch.logical_and(idx >= start, idx < start + sz)
         idx_ = idx[idx_mask]
-        # print(f"data.dtype = {data.dtype}")
-        # print(f"idx_.dtype = {idx_.dtype}")
-        # print(f"start.dtype = {start.dtype}")
-        # print(f"loads.dtype = {loads.dtype}")
-        # print(f"facs.dtype = {facs.dtype}")
         errs = data[idx_ - start] - loads.T[idx_] @ facs
         out += torch.sum(errs ** 2)
         start += sz

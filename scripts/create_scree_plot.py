@@ -5,10 +5,10 @@ import torch
 
 from datetime import datetime
 
-from config import load_config
 from utils import (
     compute_loss,
     execute_script,
+    load_config,
     model_from_loads,
 )
 
@@ -24,6 +24,10 @@ if __name__ == '__main__':
     parser.add_argument('--max_n_facs', type=int)
     parser.add_argument('--prop_init', type=float, default=1.0)
     parser.add_argument('--world_size', type=int)
+    parser.add_argument('--batch_size', type=int, default=4096)
+    parser.add_argument('--lr', type=int, default=64)
+    parser.add_argument('--tol', type=float, default=1e-8)
+    parser.add_argument('--max_epochs', type=int, default=1000)
     parser.add_argument('--seed', type=int, default=12345)
     args = parser.parse_args()
 
@@ -32,7 +36,7 @@ if __name__ == '__main__':
     # Set paths
     path_init = os.path.join(args.dir_out, 'init-loads-full.pt')
     path_model = os.path.join(args.dir_out, 'model-dssgd-full.pth')
-    dir_cov = os.path.join(args.dir_out, 'cov')
+    dir_cov = os.path.join(args.dir_out_scratch, 'cov') # TODO: May need to change this...
 
     # Compute variable count
     path = os.path.join(
@@ -42,7 +46,7 @@ if __name__ == '__main__':
     n_vars = torch.load(path).shape[1]
 
     # Create CSV in which to store results
-    path_csv = os.path.join(args.dir_out, 'scree_plot.csv')
+    path_csv = os.path.join(args.dir_out, f'scree_{args.min_n_facs}-{args.max_n_facs}.csv')
     with open(path_csv, 'w', newline='') as file: 
         writer = csv.writer(file)
         writer.writerow(['k', 'loss'])
@@ -52,7 +56,7 @@ if __name__ == '__main__':
     
         # Initialize loadings
         print("----- Loading Initialization -----", flush=True)
-        path = os.path.join(config.root, f'initialize_loadings.py')
+        path = os.path.join(config.root, 'scripts', f'initialize_loadings.py')
         flags = {
             'config': args.config,
             'dir_out': args.dir_out,
@@ -66,10 +70,10 @@ if __name__ == '__main__':
         }
         execute_script(path, flags)
 
-        # Estimate loadings (TODO: after covariance computed)
+        # Estimate loadings
         print("----- Loading Estimation -----", flush=True)
-        path = os.path.join(config.root, f'estimate_loads_dssgd.py')
-        flags = { # TODO: SGD parameters may need tuning
+        path = os.path.join(config.root, 'scripts', f'estimate_loads_dssgd.py')
+        flags = {
             'config': args.config,
             'dir_out': args.dir_out,
             'dir_out_scratch': args.dir_out_scratch,
@@ -77,16 +81,16 @@ if __name__ == '__main__':
             'n_facs': k,
             'n_vars': n_vars,
             'world_size': args.world_size,
-            'batch_size': 4096,
-            'lr': 16.0,
-            'tol': 1e-7,
+            'batch_size': args.batch_size,
+            'lr': args.lr,
+            'tol': args.tol,
             'patience': 5,
-            'max_epochs': 1000,
+            'max_epochs': args.max_epochs,
             'seed': args.seed
         }
         execute_script(path, flags)
 
-        # Compute loss (TODO: after covariance computed)
+        # Compute loss
         print("----- Loss Computation -----", flush=True)
         loads = torch.load(path_model)['loads']
         # loads = torch.load(path_init)

@@ -22,7 +22,7 @@ if __name__ == '__main__':
     # Load config and design
     config = load_config(args.config)
     design = load_yaml(os.path.join(config.group_root, 'designs', f'{args.design}.yml'))
-    
+
     # Define globals
     n_reps = design.pop('n_reps')
     base_seed = design.pop('base_seed')

@@ -109,7 +109,7 @@ while DESIGNS= read -r design; do
         JOB_IDS="${JOB_IDS}:${JOB_ID}"
     fi
 
-done < "slurm/superdesigns/$superdesign.txt"
+done < "superdesigns/$superdesign.txt"
 
 # Write JOB_IDS to temp file so that run-simulation script knows which jobs
 # it needs to wait for.

@@ -4,7 +4,6 @@ import torch.multiprocessing as mp
 import subprocess
 from functools import partial
 
-from config import load_config
 
 
 def run_subprocess(args):
@@ -104,13 +103,12 @@ def process_sub_fix_denoise(sub: str, dir_out: str, fix_model: str, threshold: i
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str)
     parser.add_argument('--dir_in', type=str)  # group/datasets/ds002785
     parser.add_argument('--dir_out', type=str) # group/datasets/ds002785-fix
     parser.add_argument('--dir_fsl', type=str) # work/fsl
     parser.add_argument(
         '--step', type=str, 
-        choices=['bet', 'feat', 'fix-extract', 'fix-denoise']
+        choices=['bet', 'feat', 'fix-extract', 'fix-train', 'fix-denoise']
     )
     parser.add_argument('--n_subs', type=int)
     parser.add_argument('--fix_model', type=str)
@@ -118,8 +116,9 @@ if __name__ == '__main__':
     parser.add_argument('--world_size', type=int)
     args = parser.parse_args()
     
-    config = load_config(args.config)
     os.makedirs(args.dir_out, exist_ok=True)
+    if args.step == 'bet':
+        os.makedirs(os.path.join(args.dir_out, 'bet'), exist_ok=True)
     
     step_fcns = {
         'bet': partial(process_sub_bet, dir_in=args.dir_in, dir_out=args.dir_out),
@@ -138,7 +137,17 @@ if __name__ == '__main__':
         ),
     }
 
-    # Preprocess in parallel
-    subs = [str(s).zfill(4) for s in range(51, args.n_subs + 1)] # TODO: Change from 51 to 1
-    with mp.Pool(args.world_size) as pool:
-        pool.map(step_fcns[args.step], subs)
+    # Subject labels
+    subs = [str(s).zfill(4) for s in range(1, args.n_subs + 1)]
+    
+    # Train FIX model
+    # NOTE: Only include subjects with hand labels in training
+    if args.step == 'fix-train':
+        path_model = os.path.join(args.dir_out, args.fix_model)
+        paths_feat = [os.path.join(args.dir_out, f'sub-{sub}.feat') for sub in subs]
+        run_subprocess(['fix', '-t', path_model, *paths_feat])
+    
+    # Execute other steps in parallel
+    else:
+        with mp.Pool(args.world_size) as pool:
+            pool.map(step_fcns[args.step], subs)

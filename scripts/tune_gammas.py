@@ -136,7 +136,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_folds', type=int)
     parser.add_argument('--est_method_loads', type=str)
     parser.add_argument('--rot_method', type=str)
-    parser.add_argument('--regime', type=int, choices=[1, 2, 3])
+    parser.add_argument('--regime', type=int, choices=[1, 2])
     parser.add_argument('--path_mask', type=str)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--max_iters', type=int, default=100)
@@ -158,7 +158,7 @@ if __name__ == '__main__':
     dir_data = os.path.join(args.dir_out_scratch, 'data')
     
     # Get loadings
-    if args.regime in [1, 2]: 
+    if args.regime == 1: 
         path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path)
         if args.path_mask is not None: 

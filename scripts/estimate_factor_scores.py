@@ -110,13 +110,12 @@ if __name__ == '__main__':
     parser.add_argument('--dir_out_scratch', type=str)
     parser.add_argument('--est_method', type=str, choices=['pls', 'rbels'])
     parser.add_argument('--sub_nums', type=int, nargs='+')
-    # parser.add_argument('--gammas', type=float, nargs='+')
     parser.add_argument('--path_gammas', type=str)
     parser.add_argument('--split', type=str)
     parser.add_argument('--fold', type=int)
     parser.add_argument('--est_method_loads', type=str)
     parser.add_argument('--rot_method', type=str)
-    parser.add_argument('--regime', type=int, choices=[1, 2, 3])
+    parser.add_argument('--regime', type=int, choices=[1, 2])
     parser.add_argument('--path_mask', type=str)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--agg_subs', action='store_true')
@@ -137,11 +136,8 @@ if __name__ == '__main__':
             raise Exception(f"Ivalid gamma shape: {gammas.shape}")
 
     # NOTE: (Regimes)
-    #   (1) Estimate from (C_hat, L, B)
-    #   (2) Estimate from (C_hat, L, B_hat)
-    #   (3) Estimate from (C_hat, L_hat, B_hat)
-
-    # TODO: Remove regime 2 and rename regime 3 to regime 2
+    #   (1) Estimate from (C_hat, L)
+    #   (2) Estimate from (C_hat, L_hat)
 
     if args.regime == 1:
         path = os.path.join(args.dir_out, 'loads.pt')
@@ -151,16 +147,8 @@ if __name__ == '__main__':
             loads = loads[:,mask]
 
     if args.regime == 2:
-        path = os.path.join(args.dir_out, 'loads.pt')
-        loads = torch.load(path).numpy()
-        if args.path_mask is not None: 
-            mask = torch.flatten(torch.load(args.path_mask)).numpy()
-            loads = loads[:,mask]
-
-    if args.regime == 3:
         path = os.path.join(args.dir_out, f'model-{args.est_method_loads}-full-{args.rot_method}-smooth-shrink.pth')
         loads = torch.load(path)['loads'].numpy().T
-
 
     # Get spatial indices
     if args.split in ['train', 'valid']:

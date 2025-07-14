@@ -38,7 +38,7 @@ if __name__ == '__main__':
     path_out_time = lambda v: os.path.join(args.dir_out, f'icas-time_split-train_v-{v}.npy')
 
     # Build path/flags
-    path = os.path.join(config.root, 'melodic_estimation.py')
+    path = os.path.join(config.root, 'scripts', 'melodic_estimation.py')
     flags = {
         'config': args.config,
         'dir_out': args.dir_out,

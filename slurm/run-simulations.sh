@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --account=nfl5182_sc
+#SBATCH --account=<ACCOUNT>
 #SBATCH --job-name=simulation
 #SBATCH --mail-type=END,FAIL                      
-#SBATCH --mail-user=kms8227@psu.edu            
+#SBATCH --mail-user=<EMAIL>            
 #SBATCH -N 1                                      
 #SBATCH -n 1                                  
 #SBATCH --mem-per-cpu=1gb                         
@@ -14,32 +14,123 @@ echo "Started: $(date)"
 echo " "
 
 # Set variables
-ROOT='/storage/home/kms8227/work/ffa-p2-priv'
-SUPERDESIGN='clean-1'
-METHODS_LE='dssgd'
-METHODS_FSE='rbels' #'pls,rbels'
+ROOT='<ROOT>'
+SUPERDESIGN=''
+TYPE=''
+METHODS_FSE='pls,rbels' #'pls,rbels'
 ROTATIONS='varimax,quartimin'
-REGIMES_FSE='3' #'1,3'
+REGIMES_FSE='1,2'
+
+# Parse command-line arguments
+for arg in "$@"; do
+    case $arg in
+        --superdesign=*)
+            SUPERDESIGN="${arg#*=}"
+            shift
+            ;;
+        --rotations=*)
+            ROTATIONS="${arg#*=}"
+            shift
+            ;;
+        --methods_fse=*)
+            METHODS_FSE="${arg#*=}"
+            shift
+            ;;
+        --regimes_fse=*)
+            REGIMES_FSE="${arg#*=}"
+            shift
+            ;;
+        --type=*)
+            TYPE="${arg#*=}"
+            shift
+            ;;
+        *)
+            echo "Unknown argument: $arg"
+            ;;
+    esac
+done
+
+# Set steps based on type
+if [[ "$TYPE" == "est" ]]; then
+    STEPS=(
+        'setup-simulations'
+        'simulate-data'
+        'compute-covariance'
+        'allocate-points'
+        'initialize-loadings'
+        'estimate-loadings'
+        'rotate'
+        'tune-sigmas'
+        'smooth-loadings'
+        'tune-kappas'
+        'shrink-loadings'
+        # 'tune-gammas'
+        # 'estimate-factor-scores'
+        'melodic-data-prep'
+        'melodic-tune-sigma'
+        'melodic-estimation'
+    )
+elif [[ "$TYPE" == "exp" ]]; then
+    STEPS=(
+        'setup-simulations'
+        'simulate-data'
+        'compute-covariance'
+        'allocate-points'
+        'initialize-loadings'
+        'estimate-loadings'
+        'rotate'
+        'tune-sigmas'
+        'smooth-loadings'
+        'tune-kappas'
+        'shrink-loadings'
+        # 'tune-gammas'
+        # 'estimate-factor-scores'
+        'melodic-data-prep'
+        'melodic-tune-sigma'
+        'melodic-estimation'
+    )
+elif [[ "$TYPE" == "fse" ]]; then
+    STEPS=(
+        'setup-simulations'
+        'simulate-data'
+        'compute-covariance'
+        'allocate-points'
+        'initialize-loadings'
+        'estimate-loadings'
+        'rotate'
+        'tune-sigmas'
+        'smooth-loadings'
+        'tune-kappas'
+        'shrink-loadings'
+        'tune-gammas'
+        'estimate-factor-scores'
+        # 'melodic-data-prep'
+        # 'melodic-tune-sigma'
+        # 'melodic-estimation'
+    )
+else
+    echo "Invalid type: $TYPE"
+    exit 1
+fi
+
 
 cd $ROOT
 source slurm/utils.sh
 
 STEPS=(
 
-    # 'setup-simulations'
-    # 'simulate-data'
-    # 'compute-covariance'
+    'setup-simulations'
+    'simulate-data'
+    'compute-covariance'
 
-    # 'allocate-points'
-    # 'initialize-loadings'
-    # # #  'tune-alpha'
-    # 'estimate-loadings'
-    # 'rotate'
-    # 'tune-sigmas'
-    # 'smooth-loadings'
-    # # 'compute-inv-err-cov' # NOTE: GLS methods not appropriate for multiple subjects
-    # 'tune-kappas'
-    # 'shrink-loadings'
+    'allocate-points'
+    'initialize-loadings'
+    'estimate-loadings'
+    'rotate'
+    'tune-sigmas'
+    'smooth-loadings'
+    'tune-kappas'
+    'shrink-loadings'
     
     # 'tune-gammas'
     # 'estimate-factor-scores'
@@ -61,7 +152,7 @@ for step in ${STEPS[@]}; do
     CMD+=" slurm/process-superdesign.sh"
     CMD+=" --step=$step"
     CMD+=" --superdesign=$SUPERDESIGN"
-    CMD+=" --methods-le=$METHODS_LE"
+    CMD+=" --methods-le=dssgd"
     CMD+=" --methods-fse=$METHODS_FSE"
     CMD+=" --rotations=$ROTATIONS"
     CMD+=" --regimes-fse=$REGIMES_FSE"

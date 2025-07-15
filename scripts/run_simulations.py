@@ -304,6 +304,7 @@ if __name__ == '__main__':
                 for v in range(rep['n_folds_sub']):
                     flags['fold'] = v
                     execute_script(path, flags, raise_error)
+                del flags['file_trg']
                     
 
     if 'tune-sigmas' in steps: 

@@ -48,8 +48,6 @@ if __name__ == '__main__':
 
         ]
     )
-    parser.add_argument('--all_le_steps', action='store_true')
-    parser.add_argument('--all_fse_steps', action='store_true')
     parser.add_argument(
         '--methods_le', type=str, nargs='+',
         choices=['lbfgs', 'dsgd', 'dssgd'],
@@ -79,33 +77,7 @@ if __name__ == '__main__':
 
     config = load_config(args.config)
     raise_error = not args.silent_fail
-
-    # Set steps. The `all_steps` flags override `steps` flag.
-    if args.all_le_steps: 
-        steps = [
-            'setup-simulations',
-            'simulate-data',
-            'compute-covariance',
-            'allocate-points',
-            'initialize-loadings',
-            'tune-alpha',
-            'estimate-loadings',
-        ]
-    elif args.all_fse_steps:
-        steps = [
-            'setup-simulations',
-            'simulate-data',
-            'compute-covariance',
-            'allocate-points',
-            'initialize-loadings',
-            'tune-alpha',
-            'estimate-loadings',
-            # 'compute-inv-err-cov',
-            'tune-gammas',
-            'estimate-factor-scores',
-        ]
-    else: 
-        steps = args.steps
+    steps = args.steps
 
 
     # Setup simulation files

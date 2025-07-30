@@ -24,7 +24,7 @@ echo " "
 
 # Source utils file
 cd ~/work/ffa-p2-priv
-source slurm/step-maps.sh
+source slurm/step-maps-simulations.sh
 
 # Parse command line arguments
 step=""
@@ -79,7 +79,7 @@ while DESIGNS= read -r design; do
     CMD+=" --account=$SLURM_JOB_ACCOUNT"
     CMD+=" --job-name=process-design_${design}_${step}"
     CMD+=" --output=slurm/output/process-design_${design}_${step}_${SLURM_JOB_ID}.out"
-    CMD+=" -n ${step_cpus[$step]}"
+    CMD+=" -c ${step_cpus[$step]}"
     CMD+=" --mem-per-cpu=${step_mem_per_cpu[$step]}gb"
     CMD+=" --time=${step_time[$step]}"
 

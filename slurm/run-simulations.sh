@@ -117,28 +117,6 @@ fi
 cd $ROOT
 source slurm/utils.sh
 
-STEPS=(
-
-    'setup-simulations'
-    'simulate-data'
-    'compute-covariance'
-
-    'allocate-points'
-    'initialize-loadings'
-    'estimate-loadings'
-    'rotate'
-    'tune-sigmas'
-    'smooth-loadings'
-    'tune-kappas'
-    'shrink-loadings'
-    
-    # 'tune-gammas'
-    # 'estimate-factor-scores'
-
-    'melodic-data-prep'
-    'melodic-tune-sigma'
-    'melodic-estimation'
-)
 
 LAST_STEP=""
 for step in ${STEPS[@]}; do

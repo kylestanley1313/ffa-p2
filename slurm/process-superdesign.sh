@@ -1,8 +1,6 @@
 #!/bin/bash
 # SBATCH --account=open
 # SBATCH --job-name=process-superdesign
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --mem-per-cpu=1gb

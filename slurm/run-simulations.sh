@@ -1,8 +1,6 @@
 #!/bin/bash
 #SBATCH --account=<ACCOUNT>
-#SBATCH --job-name=simulation
-#SBATCH --mail-type=END,FAIL                      
-#SBATCH --mail-user=<EMAIL>            
+#SBATCH --job-name=simulation         
 #SBATCH -N 1                                      
 #SBATCH -n 1                                  
 #SBATCH --mem-per-cpu=1gb                         

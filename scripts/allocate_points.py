@@ -160,7 +160,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--est_method', type=str, choices=['lbfgs', 'dsgd', 'dssgd'])
+    parser.add_argument('--est_method', type=str, choices=['dsgd', 'dssgd'])
     parser.add_argument(
         '--world_size', type=int, 
         help="Number of workers used in downstream estimation."

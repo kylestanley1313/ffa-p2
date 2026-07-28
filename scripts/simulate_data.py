@@ -9,8 +9,8 @@ from functools import partial
 from scipy.interpolate import BSpline, splrep
 from typing import Callable, List, Sequence, Tuple, Union
 
-from config import load_config
 from utils import (
+    load_config,
     multiply_list,
     refresh_directory, 
     reshape_sparse_coo_tensor,

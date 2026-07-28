@@ -14,7 +14,7 @@ build_run_simulations_cmd () {
     REGIMES_FSE="${6//,/ }"
 
     # Build run_simulations command
-    CMD="python run_simulations.py --config roar"
+    CMD="python scripts/run_simulations.py --config roar"
     CMD+=" --design $2"
     CMD+=" --steps $1"
     if [ ! -z "$METHODS_LE" ]; then

@@ -4,10 +4,10 @@ import sys
 import torch
 from functools import partial
 
-from config import load_config
 from utils import (
     execute_script,
     gen_tensors,
+    load_config,
 )
 
 
@@ -24,11 +24,6 @@ def compute_loss(idx, dataloader, loads, facs):
         sz = len(data)
         idx_mask = torch.logical_and(idx >= start, idx < start + sz)
         idx_ = idx[idx_mask]
-        # print(f"data.dtype = {data.dtype}")
-        # print(f"idx_.dtype = {idx_.dtype}")
-        # print(f"start.dtype = {start.dtype}")
-        # print(f"loads.dtype = {loads.dtype}")
-        # print(f"facs.dtype = {facs.dtype}")
         errs = data[idx_ - start] - loads.T[idx_] @ facs
         out += torch.sum(errs ** 2)
         start += sz
@@ -64,9 +59,9 @@ def compute_cv_loss_for_gammas(
     torch.save(gammas, path_gammas)
 
     # Build Execution parameters
-    path_script = os.path.join(config.root, f'estimate_factor_scores.py')
+    path_script = os.path.join(config.root, 'scripts', f'estimate_factor_scores.py')
     flags = {
-        'config': config.name,
+        'config': args.config,
         'dir_out': dir_out,
         'dir_out_scratch': dir_out_scratch,
         'est_method': 'rbels',
@@ -141,7 +136,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_folds', type=int)
     parser.add_argument('--est_method_loads', type=str)
     parser.add_argument('--rot_method', type=str)
-    parser.add_argument('--regime', type=int, choices=[1, 2, 3])
+    parser.add_argument('--regime', type=int, choices=[1, 2])
     parser.add_argument('--path_mask', type=str)
     parser.add_argument('--batch_size', type=int)
     parser.add_argument('--max_iters', type=int, default=100)
@@ -163,7 +158,7 @@ if __name__ == '__main__':
     dir_data = os.path.join(args.dir_out_scratch, 'data')
     
     # Get loadings
-    if args.regime in [1, 2]: 
+    if args.regime == 1: 
         path = os.path.join(args.dir_out, 'loads.pt')
         loads = torch.load(path)
         if args.path_mask is not None: 

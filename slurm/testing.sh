@@ -5,7 +5,7 @@
 #SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH -c 1
+#SBATCH -c 2
 #SBATCH --mem-per-cpu=20gb
 #SBATCH --time=2:00:00
 #SBATCH --output=slurm/output/testing_%j.out
@@ -28,19 +28,28 @@ cd /storage/home/kms8227/work/ffa-p2-priv
 # python create_plots_analysis.py
 # python scratch_defense.py
 
-/storage/home/kms8227/work/.conda/envs/ffa-p2/bin/python \
-    /storage/work/kms8227/ffa-p2-priv/tune_sigmas.py \
-    --config roar \
-    --dir_out /storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0 \
-    --dir_out_scratch /storage/home/kms8227/scratch/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0 \
-    --sigma_grid 0 0.5 \
-    --sz_space 30 30 \
-    --est_method dssgd \
-    --n_folds 3 \
-    --rot_method varimax
+# python scripts/create_scree_plot.py \
+#     --config roar \
+#     --dir_out /storage/group/kms8227/default/ffa-p2-priv/out/clean-1_1/sim-0/rep-0 \
+#     --dir_out_scratch /storage/home/kms8227/scratch/ffa-p2-priv/out/clean-1_1/sim-0/rep-0 \
+#     --n_folds 3 \
+#     --min_n_facs 1 \
+#     --max_n_facs 3 \
+#     --world_size 2 
+
+# /storage/home/kms8227/work/.conda/envs/ffa-p2/bin/python \
+#     /storage/work/kms8227/ffa-p2-priv/tune_sigmas.py \
+#     --config roar \
+#     --dir_out /storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0 \
+#     --dir_out_scratch /storage/home/kms8227/scratch/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0 \
+#     --sigma_grid 0 0.5 \
+#     --sz_space 30 30 \
+#     --est_method dssgd \
+#     --n_folds 3 \
+#     --rot_method varimax
 
 
-Rscript rotate.R --path_in=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/loads-dssgd-train-0.csv.gz --path_out=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/loads-dssgd-train-0-targor.csv.gz --path_rot=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/rot-targor-train-0.csv.gz --rot_method=targor --path_trg=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/model-dssgd-full-varimax.csv.gz
+# Rscript rotate.R --path_in=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/loads-dssgd-train-0.csv.gz --path_out=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/loads-dssgd-train-0-targor.csv.gz --path_rot=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/rot-targor-train-0.csv.gz --rot_method=targor --path_trg=/storage/group/kms8227/default/ffa-p2-priv/out/sim-test-3_regime-2_loads-BL_K-2/sim-0/rep-0/tmp-rot/model-dssgd-full-varimax.csv.gz
 
 
 
@@ -339,16 +348,16 @@ Rscript rotate.R --path_in=/storage/group/kms8227/default/ffa-p2-priv/out/sim-te
 #   - Training: ?
 #   - Denoising: ~5 min/sub
 
-# python /storage/home/kms8227/work/ffa-p2-priv/preprocess_aomic_data.py \
-#     --config roar \
-#     --dir_in /storage/group/kms8227/default/datasets/ds002785 \
-#     --dir_out /storage/group/kms8227/default/datasets/ds002785-fix \
-#     --dir_fsl /storage/home/kms8227/work/fsl \
-#     --step fix-denoise \
-#     --n_subs 216 \
-#     --fix_model model-n10 \
-#     --threshold 20 \
-#     --world_size 10
+python /storage/home/kms8227/work/ffa-p2-priv/preprocess_aomic_data.py \
+    --config roar \
+    --dir_in /storage/group/kms8227/default/datasets/ds002785 \
+    --dir_out /storage/group/kms8227/default/datasets/ds002785-fix-1 \
+    --dir_fsl /storage/home/kms8227/work/fsl \
+    --step bet \
+    --n_subs 216 \
+    --fix_model model-n10 \
+    --threshold 20 \
+    --world_size 10
 
 
 # FIX training (include -l for LOOCV)

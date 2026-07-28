@@ -7,7 +7,6 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from typing import Optional
 
-from config import load_config
 from utils.data import (
     DistributedStratifiedCovarianceDataset,
     DistributedStratifiedDatasetBatchSampler,
@@ -17,6 +16,7 @@ from utils import (
     CODE_DIVERGENCE,
     gen_seeds, 
     init_process,
+    load_config,
     loss_fcn,
     remove_file,
     write_rows_to_csv,

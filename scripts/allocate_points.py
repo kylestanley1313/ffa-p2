@@ -4,10 +4,10 @@ import torch
 import torch.multiprocessing as mp
 from typing import List, Tuple
 
-from config import load_config
 from utils import (
     init_process,
     gen_tensors,
+    load_config,
     refresh_directory,
     remove_file,
 )
@@ -160,7 +160,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', type=str)
     parser.add_argument('--dir_out', type=str)
     parser.add_argument('--dir_out_scratch', type=str)
-    parser.add_argument('--est_method', type=str, choices=['lbfgs', 'dsgd', 'dssgd'])
+    parser.add_argument('--est_method', type=str, choices=['dsgd', 'dssgd'])
     parser.add_argument(
         '--world_size', type=int, 
         help="Number of workers used in downstream estimation."

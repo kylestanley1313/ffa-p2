@@ -4,8 +4,7 @@ import numpy as np
 import os
 import torch
 
-from config import load_config
-from utils import read_tensors
+from utils import load_config, read_tensors
 
 
 # NOTE: This script is to be run after compute_covariance.py as it needs

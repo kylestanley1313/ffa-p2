@@ -3,8 +3,7 @@ import os
 import torch
 import torch.nn.functional as fcnl
 
-from config import load_config
-from utils import multiply_list, model_from_loads
+from utils import load_config, multiply_list, model_from_loads
 
 # NOTE: This script implements smoothing via convolution with a Gaussian
 # kernel. To accelerate smoothing, D separable 1-dimensional convolutions are

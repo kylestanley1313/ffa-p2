@@ -4,10 +4,10 @@ import sys
 import torch
 from functools import partial
 
-from config import load_config
 from utils import (
     compute_loss,
     execute_script, 
+    load_config,
     model_from_loads,
 )
 
@@ -30,9 +30,9 @@ def compute_cv_loss_for_sigmas(
     path_out = lambda v: os.path.join(args.dir_out, f'model-{est_method}-train-{v}-{rot_method}-smooth.pth')
 
     # Build Execution parameters
-    path_script = os.path.join(config.root, 'smooth_loads.py')
+    path_script = os.path.join(config.root, 'scripts', 'smooth_loads.py')
     flags = {
-        'config': config.name,
+        'config': args.config,
         'dir_out': dir_out,
         'sigmas': sigmas,
         'sz_space': sz_space,

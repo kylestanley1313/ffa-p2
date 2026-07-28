@@ -1,13 +1,8 @@
 #!/bin/bash
 # SBATCH --account=open
 # SBATCH --job-name=process-designs
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
-# SBATCH -n 2
-# SBATCH --mem-per-cpu=5gb
-# SBATCH --time=04:00:00
-# SBATCH --output=slurm/output/%j_process-designs.out
+#SBATCH -n 1
 
 # Arguments: 
 #   1. step

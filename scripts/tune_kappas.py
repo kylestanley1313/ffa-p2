@@ -4,10 +4,10 @@ import sys
 import torch
 from functools import partial
 
-from config import load_config
 from utils import (
     compute_loss,
     execute_script, 
+    load_config,
     model_from_loads,
 )
 
@@ -33,9 +33,9 @@ def compute_cv_loss_for_kappas(
     )
 
     # Build Execution parameters
-    path_script = os.path.join(config.root, 'shrink_loads.py')
+    path_script = os.path.join(config.root, 'scripts', 'shrink_loads.py')
     flags = {
-        'config': config.name,
+        'config': args.config,
         'dir_out': dir_out,
         'kappas': kappas,
         'split': 'train',

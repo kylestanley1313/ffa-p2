@@ -3,8 +3,13 @@ import itertools
 import torch
 import os
 
-from config import load_config
-from utils import gen_seeds, load_yaml, refresh_directory, write_yaml
+from utils import (
+    gen_seeds, 
+    load_config, 
+    load_yaml, 
+    refresh_directory, 
+    write_yaml
+)
 
 
 if __name__ == '__main__':
@@ -17,7 +22,7 @@ if __name__ == '__main__':
     # Load config and design
     config = load_config(args.config)
     design = load_yaml(os.path.join(config.group_root, 'designs', f'{args.design}.yml'))
-    
+
     # Define globals
     n_reps = design.pop('n_reps')
     base_seed = design.pop('base_seed')

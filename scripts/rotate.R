@@ -38,7 +38,7 @@ if (rot_method == 'varimax' & is.null(path_trg)) {
     cat("Invalid rot_method: ", rot_method)
 }
 loads_rot <- out$loadings
-rot_mat <- t(out$Th) 
+rot_mat <- solve(t(out$Th))  ## loads_rot = loads %*% rot_mat
 
 # Save matrices
 write.table(

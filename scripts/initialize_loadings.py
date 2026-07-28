@@ -5,10 +5,10 @@ import torch
 from sklearn.decomposition import PCA
 from typing import Generator, List
 
-from config import load_config
 from utils import (
     gen_seeds,
     gen_tensors,
+    load_config,
 )
 
 

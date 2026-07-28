@@ -1,8 +1,6 @@
 #!/bin/bash
 # SBATCH --account=open
 # SBATCH --job-name=process-superdesign
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=kms8227@psu.edu
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --mem-per-cpu=1gb
@@ -24,7 +22,7 @@ echo " "
 
 # Source utils file
 cd ~/work/ffa-p2-priv
-source slurm/step-maps.sh
+source slurm/step-maps-simulations.sh
 
 # Parse command line arguments
 step=""
@@ -79,7 +77,7 @@ while DESIGNS= read -r design; do
     CMD+=" --account=$SLURM_JOB_ACCOUNT"
     CMD+=" --job-name=process-design_${design}_${step}"
     CMD+=" --output=slurm/output/process-design_${design}_${step}_${SLURM_JOB_ID}.out"
-    CMD+=" -n ${step_cpus[$step]}"
+    CMD+=" -c ${step_cpus[$step]}"
     CMD+=" --mem-per-cpu=${step_mem_per_cpu[$step]}gb"
     CMD+=" --time=${step_time[$step]}"
 
@@ -109,7 +107,7 @@ while DESIGNS= read -r design; do
         JOB_IDS="${JOB_IDS}:${JOB_ID}"
     fi
 
-done < "slurm/superdesigns/$superdesign.txt"
+done < "superdesigns/$superdesign.txt"
 
 # Write JOB_IDS to temp file so that run-simulation script knows which jobs
 # it needs to wait for.
